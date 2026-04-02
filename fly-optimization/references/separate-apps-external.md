@@ -109,6 +109,7 @@ primary_region = "yyz"
 
 [env]
   PORT = "4000"
+  HOST = "::"  # 6PN is IPv6 — bind to :: or .internal traffic won't reach the app
   NODE_ENV = "production"
 
 [[vm]]

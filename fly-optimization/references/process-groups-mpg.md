@@ -159,7 +159,7 @@ fly scale vm performance-2x --process-group worker --app prod-myapp
 - Provisioned storage sizing — don't under-provision or you'll need to resize
 - Extension compatibility — only pgvector and PostGIS available beyond default Postgres extensions; no custom extensions
 
-**6PN isolation caveat**: MPG lives on the org's default private network. If you're running apps on custom 6PN networks (e.g. `fly apps create --network prod-network` for environment isolation), your app cannot reach MPG cleanly without bridging. Avoid custom 6PN networks if using MPG.
+**6PN isolation caveat**: MPG lives on the org's default private network. Apps on custom 6PN networks (e.g. `fly apps create --network prod-network`) cannot resolve the MPG `.flycast` hostname — connections will fail silently or timeout. If you need environment isolation, use separate orgs instead of custom networks.
 
 ---
 

@@ -111,6 +111,7 @@ All public-facing services expose `GET /health` returning `200 OK`. Lightweight 
 ### Networking
 - All apps in the same org share a private IPv6 network (6PN)
 - Internal traffic uses `.internal` DNS: `http://prod-myapi.internal:3000`
+- **Your app must bind to `::` (all interfaces), not `127.0.0.1` or `0.0.0.0`** — 6PN is IPv6-only, so binding to an IPv4 address makes the service unreachable via `.internal`
 - Never route internal traffic through public URLs
 - No public `[[services.ports]]` on internal-only apps — absence of public ports = not internet-reachable, still 6PN-reachable
 

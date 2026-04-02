@@ -154,7 +154,7 @@ fly scale vm performance-2x --process-group worker --app prod-myapp
 **You own these:**
 - **Disk**: Monitor volume usage. If it fills, you're SSHing in. Set up Prometheus alerting on `pg_database_size_bytes`.
 - **OOM**: If Postgres runs out of memory it crashes and you bring it back. Size your db VM accordingly.
-- **No PgBouncer**: Fly pg doesn't bundle a connection pooler. Manage connection pool size at the app layer (e.g. Drizzle pool config). If you're running many app instances and hitting connection limits, deploy a separate pgbouncer app.
+- **No PgBouncer**: Fly pg doesn't bundle a connection pooler. Manage connection pool size at the app layer (e.g. Drizzle pool config). Rule of thumb: `pool_size = (max_connections - 5) / total_app_instances`. Default `max_connections` is 100, so for 3 instances that's ~30 per instance. Monitor with `SELECT count(*) FROM pg_stat_activity`. If you're consistently above 80% of `max_connections`, either reduce per-instance pool size or deploy a separate pgbouncer app.
 - **Backups**: Daily snapshots included. PITR is not. Know your RPO before committing.
 - **Upgrades**: Major version upgrades are manual. `fly pg` tooling helps but it's not zero-touch.
 

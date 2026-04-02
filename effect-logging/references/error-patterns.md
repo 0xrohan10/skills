@@ -33,6 +33,8 @@ class PaymentDeclinedError extends Schema.TaggedErrorClass("PaymentDeclinedError
 ) {}
 ```
 
+The first argument to `Schema.TaggedErrorClass` sets the `_tag` discriminant value used for `catchTag` matching at runtime. The second argument sets the TypeScript class name. They are almost always the same string — the API separates them because `_tag` is a runtime value while the class name is a compile-time identifier.
+
 Tagged errors are yieldable — you can yield them directly in a generator to fail:
 
 ```ts
@@ -90,6 +92,18 @@ const PaymentError = Schema.Union(PaymentDeclinedError, StripeError)
 type PaymentError = typeof PaymentError.Type
 ```
 
+Use the union as the `E` type parameter in function signatures:
+
+```ts
+const processPayment = (
+  orderId: string, amount: number
+): Effect.Effect<Charge, PaymentError, StripeService> =>
+  Effect.gen(function* () {
+    const charge = yield* chargeCard(orderId, amount)
+    return charge
+  })
+```
+
 ## Expected Errors vs Defects
 
 **Expected errors (the E channel):** Domain failures the caller can handle. Validation errors, not-found, permission denied, rate limits, payment declined. These are typed, recoverable, and should be logged at `warn` level.
@@ -142,6 +156,8 @@ const recovered = program.pipe(
   })
 )
 ```
+
+**When to catch vs propagate:** Catch when the calling function has a meaningful fallback — return a default, retry with different parameters, or degrade gracefully. Propagate when the caller can't do anything useful — let the error reach the centralized handler (see `error-handler.md`) where it gets logged and mapped to an HTTP response. Most domain errors should propagate; catch only at boundaries where the business logic genuinely has an alternative path.
 
 ## Catch-All with Effect.catch
 

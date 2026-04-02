@@ -59,7 +59,9 @@ const app = new Hono()
 app.onError((err, c) => {
   const requestId = c.get("requestId")
 
-  // If it's already an AppError with a status code
+  // At this boundary, typed Effect errors have been unwrapped into plain JS objects.
+  // Duck-typing is the pragmatic choice here — Effect's type system doesn't reach into
+  // framework error handlers. Match on _tag + statusCode to identify your domain errors.
   if ("_tag" in err && "statusCode" in err) {
     logger.warn({ err, requestId }, err.message)
     return c.json({ error: err.message, requestId }, err.statusCode)

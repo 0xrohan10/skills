@@ -113,6 +113,7 @@ primary_region = "yyz"
 
 [env]
   PORT = "4000"
+  HOST = "::"  # 6PN is IPv6 — bind to :: or .internal traffic won't reach the app
   NODE_ENV = "production"
 
 [[vm]]
@@ -169,7 +170,7 @@ fly scale vm performance-2x --app prod-myapp-api
 - Provisioned storage — monitor actual vs allocated, resize before ceiling
 - Extension constraints — only pgvector and PostGIS beyond default extensions
 
-**6PN isolation caveat**: MPG lives on the org's default private network. Custom 6PN networks (e.g. `fly apps create --network prod-network`) cannot reach MPG cleanly. Don't use custom 6PN networks if you're on MPG.
+**6PN isolation caveat**: MPG lives on the org's default private network. Apps on custom 6PN networks (e.g. `fly apps create --network prod-network`) cannot resolve the MPG `.flycast` hostname — connections will fail silently or timeout. If you need environment isolation, use separate orgs instead of custom networks.
 
 ---
 

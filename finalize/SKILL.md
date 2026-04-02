@@ -28,20 +28,6 @@ When this skill works well:
 - the final report is short, decisive, and actually useful
 - the user is left with confidence, not a pile of chores
 
-## Operating stance
-
-Think like the person who would approve this to ship tonight.
-
-- Care most about correctness, regressions, user-visible behavior, failure modes, and maintainability under real team pressure
-- Read enough surrounding code to understand the change in context, not just the patch
-- Explicitly map the likely blast radius before declaring confidence: callers, dependents, shared utilities, adjacent integrations, affected user flows, tests, docs, and rollout-sensitive surfaces
-- Prefer focused investigation over exhaustive ceremony
-- Always consider whether the changed code can be made simpler without changing behavior or widening scope
-- Use parallel exploration or subagents when helpful, but keep the critical path in the main thread
-- If you are running in Claude Code with Agent Teams available, you may use an agent team for broader finalize passes with multiple independent investigations or isolated implementation tracks; prefer simpler subagents when that is enough
-- Delegate narrow, concrete questions; do not delegate the whole task
-- Optimize for shipping confidence, not for maximum diff size
-
 ## Approval boundary
 
 This skill is proactive about getting work ready, not about making irreversible production decisions.
@@ -108,7 +94,6 @@ If the working copy is dirty, be careful about scope hygiene:
 - do not revert or overwrite user work to make your own edits easier
 - when possible, keep your edits confined to the files and hunks that belong to the task you are finalizing
 - if the boundary between your work and the user's in-progress changes is unclear and there is real risk of mixing them, stop and ask rather than guessing
-- do not make broad or destructive finalize-driven changes in-place unless you first established a safe rollback boundary or the edits are trivially reviewable and reversible
 
 If you are finalizing the current working copy on the repository's default or base branch, treat "ready to ship" as potentially including PR creation, not just code cleanup. If the work ends in high confidence, has no unresolved blockers, and the diff is a coherent task, proactively continue through the repo's normal PR flow:
 
@@ -120,20 +105,17 @@ Do this only when it is clearly safe. If the tree contains unrelated work, the t
 
 ## Default execution order
 
-Follow this sequence unless there is a strong reason not to:
+Think like the person who would approve this to ship tonight. Follow this sequence unless there is a strong reason not to:
 
 1. Determine scope and task boundaries first.
 2. Build the picture locally: read the diff, surrounding code, map the likely blast radius, and quickly size the work as low, medium, or high risk before delegating.
-3. Decide whether you need a rollback boundary before editing. If your likely changes are non-trivial and the task state is coherent, create the appropriate branch and/or baseline commit first.
-4. Decide what must stay on the critical path in the main thread.
-5. Spawn parallel subagents, or an agent team when available and justified, only for independent side investigations that can inform the main work without blocking orientation.
-6. Synthesize the findings into one concrete view of affected surfaces, likely failure modes, and the fixes or validations that matter.
-7. Fix the issues with clear, low-risk answers. Keep cross-cutting or integration-heavy fixes in the main thread, and delegate bounded, isolated implementation tasks when that reduces context load without weakening safety.
-8. Validate with the highest-fidelity safe checks available.
-9. If the change is medium or high risk, do one final targeted pass over the original blast radius after fixes and validation.
-10. Report what was checked, what was fixed, what remains unverified, and why your confidence is what it is.
-
-The user should experience this skill as consistent and predictable: understand first, delegate narrowly, integrate findings, fix decisively, validate realistically, then hand off with a concise decision-oriented report.
+3. If your likely edits are non-trivial and the task state is coherent, establish a rollback boundary first (see "Preserve reversibility" above).
+4. Spawn parallel subagents only for independent side investigations that can inform the main work without blocking orientation (see "Investigate what could block shipping" below for delegation guidance).
+5. Synthesize the findings into one concrete view of affected surfaces, likely failure modes, and the fixes or validations that matter.
+6. Fix the issues with clear, low-risk answers. Keep cross-cutting or integration-heavy fixes in the main thread, and delegate bounded, isolated implementation tasks when that reduces context load without weakening safety.
+7. Validate with the highest-fidelity safe checks available.
+8. If the change is medium or high risk, do one final targeted pass over the original blast radius after fixes and validation.
+9. Report what was checked, what was fixed, what remains unverified, and why your confidence is what it is.
 
 ## Build the picture fast
 
@@ -167,7 +149,9 @@ Examples:
 - new features or greenfield code: missing setup docs, missing env documentation, dev-only assumptions, dependency quality, missing guardrails
 - PR work: unresolved review comments or feedback — but read each one critically (see "Handle review feedback with judgment" below)
 
-Use tools and subagents opportunistically. Good delegated work is narrow and concrete:
+### Delegating to subagents
+
+Use subagents or Agent Teams for independent side investigations when that reduces context load. Good delegated work is narrow and concrete:
 
 - conventions and commands
 - dependency and impact tracing
@@ -175,23 +159,19 @@ Use tools and subagents opportunistically. Good delegated work is narrow and con
 - unresolved PR feedback
 - targeted verification of a suspicious area
 
-Ask them to return concrete findings with file references and recommended action. Avoid broad summaries that create extra reading without moving the work forward.
+Before you spawn a subagent, know what question it owns, why that question is not the main-thread critical path, and what concrete output you expect back. Ask them to return concrete findings with file references and recommended action.
+
+After subagents return, integrate their findings before editing. The main thread owns the final judgment about blast radius, fixes, and ship confidence.
+
+You may also delegate implementation work, but only when the ownership boundary is clean: concrete goal, clearly isolated write scope, low risk of conflicting with other edits.
 
 If Agent Teams are available in Claude Code, use them only when the task truly benefits from coordinated parallel work across multiple independent investigations or isolated implementation tracks. Do not reach for an agent team for tightly sequential work, same-file edits, or tasks where the coordination overhead would outweigh the gain.
-
-Before you spawn a subagent, know what question it owns, why that question is not the main-thread critical path, and what concrete output you expect back. Good outputs are things like: affected call sites, risky assumptions, missing validations, likely regressions, or a specific surface that appears safe after inspection.
-
-After subagents return, integrate their findings before editing. Do not leave their output as parallel loose ends. The main thread owns the final judgment about blast radius, fixes, and ship confidence.
-
-Once the path is clear, you may also delegate implementation work, but only when the ownership boundary is clean. Good delegated fixes have a concrete goal, a clearly isolated write scope, and low risk of conflicting with other edits or requiring broad architectural judgment.
 
 ## Fix aggressively, but only where the answer is clear
 
 Your default is to fix, not to propose.
 
 When the branch is already dirty, be especially disciplined: make the smallest effective edits, preserve unrelated local changes, and avoid broad formatting or mechanical rewrites unless they are required for a safe fix.
-
-Use subagents for implementation only when that makes the work safer or lighter on context, not just to parallelize for its own sake. The main thread should still own cross-file integration, conflict resolution, final review of delegated edits, and any fix where correctness depends on broader codebase judgment.
 
 Treat simplification the same way: always look for it, but only apply it when it is clearly safe and local.
 
@@ -288,18 +268,13 @@ If confidence is not high, say exactly why.
 
 Keep the final handoff concise and decision-oriented. Include:
 
-- scope reviewed
-- risk level and why
-- which surfaces or flows you checked, and which remain unverified if any
-- what you fixed or simplified
-- why those changes were worth making
-- what delegated investigations you used and what they established
-- what still needs a user decision, if anything
-- what you validated directly, what you only inspected, and what remains unverified
-- what validation you ran and its result
-- whether you created a rollback boundary before editing, and how
-- whether you created a branch and PR, and the link if you did
-- recommended follow-up improvements or refactors, only if they are clearly valuable and non-blocking
+- scope reviewed and risk level (with reason)
+- surfaces checked and any unverified areas
+- what was fixed or simplified, and why
+- validation run and results
+- rollback boundary created, if applicable
+- branch/PR created, if applicable
+- decisions that need user input, if any
 - ship confidence: high, medium, or low, with one short reason
 
 Keep blockers separate from follow-up ideas. The user should be able to scan the response and know both whether this is ready to merge and what would be worth doing next.

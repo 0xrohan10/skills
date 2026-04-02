@@ -131,6 +131,7 @@ const makeTestLogger = Effect.gen(function* () {
       message: typeof message === "string" ? message : JSON.stringify(message),
       annotations: Object.fromEntries(annotations),
     }
+    // Ref.update is synchronous and safe to runSync here — don't use this pattern for effectful operations
     Effect.runSync(Ref.update(logs, Arr.append(entry)))
   })
 

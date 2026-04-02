@@ -118,15 +118,9 @@ Useful for scripting alerts or pulling metrics into external tooling.
 
 ---
 
-## MetricsQL vs PromQL
-
-Fly's Prometheus is VictoriaMetrics under the hood, which uses **MetricsQL** — a PromQL superset. For day-to-day use this is transparent, but one thing that matters:
-
-`rate()` and `increase()` just work. You don't need `irate()` workarounds or Grafana's `$__rate_interval` magic. Just write `rate(fly_edge_http_responses_count[5m])` and it does the right thing.
-
----
-
 ## What to Actually Monitor
+
+**Note:** Fly uses VictoriaMetrics (MetricsQL), a PromQL superset. `rate()` and `increase()` just work — no `irate()` workarounds or Grafana's `$__rate_interval` magic needed. Write standard PromQL queries and they work.
 
 The built-ins cover most of what you need without any app code:
 
@@ -135,5 +129,21 @@ The built-ins cover most of what you need without any app code:
 - **Concurrency**: `fly_app_concurrency` — useful for tuning `soft_limit`/`hard_limit` in fly.toml
 - **OOM kills**: `fly_instance_exit_oom` — alert on any value > 0 in prod
 - **Instance restarts**: `fly_instance_exit_code` — non-zero values worth investigating
+
+### Starting-point alert thresholds
+
+Tune these for your app, but these are reasonable defaults:
+
+```
+# 5xx rate exceeds 5% of total requests
+rate(fly_edge_http_responses_count{status=~"5.."}[5m])
+  / rate(fly_edge_http_responses_count[5m]) > 0.05
+
+# Any OOM in prod is alertable
+fly_instance_exit_oom > 0
+
+# p99 latency above 2 seconds
+histogram_quantile(0.99, rate(fly_app_http_response_time_seconds_bucket[5m])) > 2
+```
 
 For custom metrics, instrument anything business-critical that the proxy layer can't see — queue depth, job processing rate, cache hit rate, etc.

@@ -114,6 +114,7 @@ primary_region = "yyz"
 
 [env]
   PORT = "4000"
+  HOST = "::"  # 6PN is IPv6 — bind to :: or .internal traffic won't reach the app
   NODE_ENV = "production"
 
 # No [http_service] with public ports — internal only
@@ -174,7 +175,7 @@ fly scale vm performance-2x --app prod-myapp-api
 **You own these:**
 - **Disk**: Monitor volume usage. Alert on `pg_database_size_bytes` via Prometheus.
 - **OOM**: Size the db VM for your workload. If Postgres OOMs it crashes.
-- **No PgBouncer**: Manage connection pool size at the app layer. With two separate apps hitting the same cluster, connection count adds up — if you hit limits, deploy a shared pgbouncer app that both route through.
+- **No PgBouncer**: Manage connection pool size at the app layer. Rule of thumb: `pool_size = (max_connections - 5) / total_instances_across_all_apps`. Default `max_connections` is 100 — with 2 apps × 3 instances each, that's ~15 per instance. Monitor with `SELECT count(*) FROM pg_stat_activity`. If you're consistently above 80% of `max_connections`, deploy a shared pgbouncer app that both route through.
 - **Backups**: Daily snapshots included. PITR is not.
 - **Upgrades**: Manual. `fly pg` tooling helps but it's not zero-touch.
 

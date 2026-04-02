@@ -68,11 +68,21 @@ console.log(JSON.stringify({
 
 Fly doesn't require a specific schema — any valid JSON line gets indexed as structured. Pick a consistent shape across your apps and stick to it.
 
-Suggested fields:
-- `level` — `"info"` | `"warn"` | `"error"`
-- `msg` — human-readable description
-- `ts` or `time` — ISO timestamp (Fly adds its own but including yours is useful)
-- contextual fields relevant to the operation (request ID, user ID, duration, etc.)
+Recommended baseline schema:
+
+```typescript
+type LogLine = {
+  level: "debug" | "info" | "warn" | "error" | "fatal"
+  msg: string
+  ts: string           // ISO 8601 (Fly adds its own, but yours is useful for precision)
+  service: string      // app name or process group name
+  request_id?: string
+  duration_ms?: number
+  [key: string]: unknown  // additional context fields per operation
+}
+```
+
+Use this as your starting point and extend with domain-specific fields as needed. The important thing is that `level`, `msg`, `ts`, and `service` are consistent across all apps in the org — this makes cross-service log correlation work.
 
 ---
 
