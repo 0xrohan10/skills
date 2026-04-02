@@ -108,6 +108,50 @@ All public-facing services expose `GET /health` returning `200 OK`. Lightweight 
   timeout = "5s"
 ```
 
+### Process Group Lifecycle
+
+**Every process group must have either `[http_service]` or `[[services]]`.** A `[checks]` block alone only monitors — it does NOT manage the machine's lifecycle. Without a service definition, a process group's machine:
+- Has no `auto_start_machines` (won't restart after crashes)
+- Has no `min_machines_running` (may stay stopped after deploys)
+- Gets created during deploy but Fly won't keep it alive
+
+Pattern for internal-only processes (API servers, workers accessed via `.internal`):
+
+```toml
+[[services]]
+  processes = ["api"]
+  internal_port = 8081
+  protocol = "tcp"
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[services.http_checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/health"
+```
+
+**`[checks]` ≠ `[[services]]`.** Checks tell you something is wrong. Services keep things running.
+
+### Dockerfile (Bun / Node monorepos)
+
+**Don't use `--production` with Bun workspace monorepos.** `bun install --production` strips devDependencies from ALL workspace packages, not just the root. Workspace packages commonly miscategorize runtime deps as devDeps, causing silent startup failures in production.
+
+**Always use `--ignore-scripts` in the production stage.** The `prepare` lifecycle script (typically `husky`) runs during install. In production Docker images, husky and other dev tooling aren't available. Skip it:
+
+```dockerfile
+# Runner stage
+COPY package.json bun.lock ./
+COPY packages ./packages
+COPY apps ./apps
+RUN bun install --frozen-lockfile --ignore-scripts
+```
+
+The same applies to npm/pnpm — `npm ci --ignore-scripts` is standard for production Docker builds.
+
 ### Networking
 - All apps in the same org share a private IPv6 network (6PN)
 - Internal traffic uses `.internal` DNS: `http://prod-myapi.internal:3000`

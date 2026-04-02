@@ -102,6 +102,7 @@ primary_region = "yyz"
     protocol = "http"
     timeout = "5s"
 
+# Every process group needs [http_service] or [[services]] — [checks] alone won't manage lifecycle
 # worker: internal only, autostop if lightly used
 [[services]]
   processes = ["worker"]
@@ -171,3 +172,5 @@ fly scale vm performance-2x --process-group worker --app prod-myapp
 - **Secrets shared** — `DATABASE_URL` goes to all process groups, no scoping possible
 - **Storage is provisioned** — monitor actual usage vs provisioned; resize before you hit the ceiling
 - **Don't bypass PgBouncer** — the MPG connection string points to the pooler; connecting directly to Postgres port skips it
+- **`[checks]` without `[[services]]`** — a process group with only a `[checks]` block has no lifecycle management; Fly will create the machine during deploy but won't ensure it starts or stays running. Every group needs `[http_service]` or `[[services]]`
+- **Release command transient failures** — Fly's `release_command` machine occasionally fails to restart after running successfully (408 timeout, "process not found"). The migration itself completes fine. Re-run the deploy — this is a known transient Fly platform issue, not a code problem
