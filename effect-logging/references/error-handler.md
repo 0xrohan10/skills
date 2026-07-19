@@ -1,150 +1,156 @@
-# Centralized Error Handling in Effect HTTP APIs
+# HTTP Error and Cause Boundaries
 
-## The HTTP Error Handler Pattern
+Read this reference when mapping domain errors to transport responses or inspecting full causes. The response types below are application-neutral pseudo transport shapes; adapt them to the project's HTTP framework instead of assuming Hono, Express, or Effect HTTP APIs.
 
-In any Effect-based API (hono, express, or a raw HTTP server), you want a single error-handling layer that catches anything that escapes your route handlers. This is where the expected-vs-defect distinction pays off.
+## Exhaustive domain policy
+
+Keep status, client body, severity, and event name in one exhaustive policy. This example intentionally treats routine client outcomes differently from throttling and dependency failures.
+
+```ts
+type DomainError =
+  | { readonly _tag: "ValidationError"; readonly field: string }
+  | { readonly _tag: "NotFoundError"; readonly resource: string }
+  | { readonly _tag: "UnauthorizedError" }
+  | { readonly _tag: "RateLimitedError"; readonly retryAfterSeconds: number }
+  | { readonly _tag: "PaymentDeclinedError"; readonly reasonCode: string }
+  | { readonly _tag: "PersistenceError"; readonly operation: string }
+  | { readonly _tag: "PaymentProviderError"; readonly operation: string }
+
+type ErrorPolicy = {
+  readonly status: number
+  readonly code: string
+  readonly clientMessage: string
+  readonly logLevel: "Info" | "Warn" | "Error"
+  readonly event: string
+  readonly alert: boolean
+}
+
+const absurd = (value: never): never => {
+  throw new Error(`Unhandled domain error: ${String(value)}`)
+}
+
+const policyFor = (error: DomainError): ErrorPolicy => {
+  switch (error._tag) {
+    case "ValidationError":
+      return { status: 400, code: "invalid_request", clientMessage: "Request validation failed", logLevel: "Info", event: "http.request.invalid", alert: false }
+    case "NotFoundError":
+      return { status: 404, code: "not_found", clientMessage: "Resource not found", logLevel: "Info", event: "http.resource.not_found", alert: false }
+    case "UnauthorizedError":
+      return { status: 401, code: "unauthorized", clientMessage: "Authentication required", logLevel: "Info", event: "http.request.unauthorized", alert: false }
+    case "RateLimitedError":
+      return { status: 429, code: "rate_limited", clientMessage: "Too many requests", logLevel: "Warn", event: "http.request.rate_limited", alert: false }
+    case "PaymentDeclinedError":
+      return { status: 422, code: "payment_declined", clientMessage: "Payment was declined", logLevel: "Info", event: "payment.declined", alert: false }
+    case "PersistenceError":
+      return { status: 503, code: "temporarily_unavailable", clientMessage: "Service temporarily unavailable", logLevel: "Error", event: "dependency.persistence.failed", alert: true }
+    case "PaymentProviderError":
+      return { status: 502, code: "payment_unavailable", clientMessage: "Payment service unavailable", logLevel: "Error", event: "dependency.payment.failed", alert: true }
+    default:
+      return absurd(error)
+  }
+}
+```
+
+Adding an error to `DomainError` now fails typechecking until its boundary policy is added. Keep response messages stable and safe; diagnose with allowlisted fields, not leaked error payloads.
+
+## Cause-aware boundary
+
+Effect v4 `Cause` can hold several `Fail`, `Die`, and `Interrupt` reasons. A single-error shortcut is valid only after proving the Cause has exactly one typed failure. `Cause.findErrorOption` returns an `Option<E>`; narrow it and use `.value`, never pass the `Option` itself to policy or response code.
 
 ```ts
 import { Cause, Effect, Option } from "effect"
 
-// Top-level error handler middleware
-const withErrorHandler = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+type HttpErrorResponse = {
+  readonly status: number
+  readonly body: {
+    readonly error: {
+      readonly code: string
+      readonly message: string
+    }
+    readonly request_id: string
+  }
+}
+
+const responseFromPolicy = (
+  policy: ErrorPolicy,
+  requestId: string,
+): HttpErrorResponse => ({
+  status: policy.status,
+  body: {
+    error: { code: policy.code, message: policy.clientMessage },
+    request_id: requestId,
+  },
+})
+
+const logDomainError = (policy: ErrorPolicy, error: DomainError) => {
+  const log = policy.logLevel === "Info"
+    ? Effect.logInfo
+    : policy.logLevel === "Warn"
+    ? Effect.logWarning
+    : Effect.logError
+
+  return log(policy.event).pipe(
+    Effect.annotateLogs({
+      error_tag: error._tag,
+      http_status: policy.status,
+      alert: policy.alert,
+    }),
+  )
+}
+
+const withHttpErrorBoundary = <A, R>(
+  effect: Effect.Effect<A, DomainError, R>,
+  requestId: string,
+) =>
   effect.pipe(
-    Effect.catchAllCause((cause) => {
-      if (Cause.isFailureType(cause)) {
-        // Typed failure from the E channel — operational/expected error
-        const error = Cause.failureOption(cause)
-        return Effect.gen(function* () {
-          yield* Effect.logWarning("request failed with expected error").pipe(
-            Effect.annotateLogs({
-              error: JSON.stringify(Option.getOrElse(error, () => "unknown")),
-              causeType: "failure",
-            })
-          )
-          return toErrorResponse(error, 400)
-        })
+    Effect.catchCause((cause) => {
+      if (Cause.hasInterrupts(cause)) {
+        return Effect.failCause(cause)
       }
 
-      // Defect — something genuinely broke
-      return Effect.gen(function* () {
-        yield* Effect.logError("unexpected defect").pipe(
-          Effect.annotateLogs({
-            defect: Cause.pretty(cause),
-            causeType: "defect",
-          })
+      const error = Cause.findErrorOption(cause)
+      const isSingleTypedFailure =
+        cause.reasons.length === 1 &&
+        Cause.isFailReason(cause.reasons[0])
+
+      if (isSingleTypedFailure && Option.isSome(error)) {
+        const domainError = error.value
+        const policy = policyFor(domainError)
+        return logDomainError(policy, domainError).pipe(
+          Effect.as(responseFromPolicy(policy, requestId)),
         )
-        // Never leak internal details to the client
-        return genericErrorResponse(500)
-      })
-    })
+      }
+
+      const response: HttpErrorResponse = {
+        status: 500,
+        body: {
+          error: { code: "internal_error", message: "Internal server error" },
+          request_id: requestId,
+        },
+      }
+
+      return Effect.logError("http.request.failed").pipe(
+        Effect.annotateLogs({
+          reason_count: cause.reasons.length,
+          cause_kind: Cause.hasDies(cause) ? "defect_or_composite" : "composite_failure",
+        }),
+        Effect.as(response),
+      )
+    }),
   )
 ```
 
-### Key Decisions
+This boundary makes four deliberate choices:
 
-**Operational errors → `logWarning`, specific status code, safe error message to client.**
-These are 4xx-class: validation failures, not-found, auth failures, rate limits. The system is working as designed. The client gets a useful error message (but not internal details like stack traces).
+- Any interruption, including an interruption mixed with another reason, is re-failed unchanged so cancellation is not swallowed.
+- Exactly one typed failure uses the exhaustive domain policy.
+- Defects and composite non-interruption causes log a bounded classification and return a generic `500`; choosing one status from several failures would be lossy and order-dependent. Send a sanitized Cause to a separately access-controlled diagnostic sink only when the operational requirement justifies it.
+- Client responses contain only stable public fields plus a request id. The full Cause remains available to Effect control flow; production logs receive only the explicitly sanitized diagnostic fields required by their sink policy.
 
-**Defects → `logError`, generic 500, no internal details.**
-The client gets `{ "error": "internal server error", "requestId": "abc-123" }` and nothing else. Your logs get the full `Cause.pretty(cause)` which includes the defect, the fiber trace, and any annotations.
+If the application has a truthful policy for homogeneous composite failures, encode and test it explicitly rather than silently selecting the first failure.
 
-### Hono Integration Example
+## Framework and process edges
 
-```ts
-import { Hono } from "hono"
-import { Effect } from "effect"
-
-const app = new Hono()
-
-app.onError((err, c) => {
-  const requestId = c.get("requestId")
-
-  // At this boundary, typed Effect errors have been unwrapped into plain JS objects.
-  // Duck-typing is the pragmatic choice here — Effect's type system doesn't reach into
-  // framework error handlers. Match on _tag + statusCode to identify your domain errors.
-  if ("_tag" in err && "statusCode" in err) {
-    logger.warn({ err, requestId }, err.message)
-    return c.json({ error: err.message, requestId }, err.statusCode)
-  }
-
-  // Unknown — treat as defect
-  logger.error({ err, requestId }, "unhandled exception")
-  return c.json({ error: "internal server error", requestId }, 500)
-})
-```
-
-### Cause is Rich
-
-`Cause` captures more than just the error — it records the full failure trace including:
-
-- **Sequential composition** — if multiple effects failed in sequence
-- **Parallel composition** — if concurrent fibers both failed
-- **Interruption** — if a fiber was interrupted
-- **The defect itself** — with stack trace
-
-`Cause.pretty(cause)` gives a human-readable rendering of the entire causal chain, which is invaluable when you have fibers forking and joining.
-
-## Outbound Call Failures
-
-When calling external services, log more than just "call failed":
-
-```ts
-const callExternalApi = Effect.fn("callExternalApi")(
-  function* (endpoint: string, payload: unknown) {
-    const start = Date.now()
-    const result = yield* Effect.tryPromise({
-      try: () => fetch(endpoint, { method: "POST", body: JSON.stringify(payload) }),
-      catch: (error) =>
-        new ExternalApiError({
-          service: "payments",
-          endpoint,
-          duration_ms: Date.now() - start,
-          error,
-        }),
-    })
-    yield* Effect.logInfo("external call completed").pipe(
-      Effect.annotateLogs({
-        service: "payments",
-        endpoint,
-        status: result.status,
-        duration_ms: Date.now() - start,
-      })
-    )
-    return result
-  }
-)
-```
-
-Log the duration, status code, service name, and endpoint. Do NOT log full request/response bodies (PII, size) or auth headers.
-
-## Process-Level Safety Nets
-
-These should never fire in a healthy app. If they do, it's a bug.
-
-```ts
-import { Effect } from "effect"
-
-// In your main entry point
-process.on("unhandledRejection", (reason) => {
-  // Use your logger directly here since we're outside the Effect runtime
-  logger.fatal({ err: reason }, "unhandled promise rejection")
-})
-
-process.on("uncaughtException", (err) => {
-  logger.fatal({ err }, "uncaught exception — shutting down")
-  process.exit(1) // State is unreliable, must exit
-})
-```
-
-`fatal` level because the process is in an unknown state. If these fire, treat it as a P0 bug to investigate.
-
-## Alert Strategy
-
-The expected/defect split enables a sane alerting strategy:
-
-- **Don't alert on expected errors.** A spike in 4xx responses might warrant a dashboard metric, but individual validation failures or not-founds are not incidents.
-- **Alert on defects.** These are real bugs or infrastructure failures. Page someone.
-- **Alert on error rate thresholds.** If your 4xx rate suddenly spikes 10x, that's worth investigating even though individual 4xxs aren't alertable — it might indicate a broken client deployment or a regression.
-- **Alert on `fatal` always.** Process-level failures are always incidents.
-
-Without the expected/defect distinction, you end up with alert fatigue — your error channel becomes a firehose of 400 bad requests mixed in with actual database outages, and eventually everyone just ignores it.
+- Framework-specific adapters should run the Effect boundary before converting to the framework response type. Avoid duck-typing arbitrary thrown values after `runPromise` has already collapsed the Cause.
+- Node-specific `unhandledRejection` and `uncaughtException` handlers live outside the Effect runtime. Use the process logger directly there, synchronously flush if the sink supports it, and terminate after an uncaught exception.
+- Log and alert on rates and service-level impact, not merely on every `4xx`. Routine validation and not-found events usually belong in metrics or sampled `Info` logs.

@@ -1,187 +1,210 @@
-# Logger Setup in Effect-TS
+# Logger, Context, and Tracing Setup
 
-## Built-in Logger Options
+Read this reference when selecting logger implementations, adapting another logging library, setting privacy rules, capturing test logs, or distinguishing logging from tracing. The APIs shown are current Effect v4 APIs.
 
-Effect ships with several logger implementations you can swap in without any external dependencies.
+## Three distinct mechanisms
 
-### Logger.json (recommended for prod)
+| Mechanism | APIs | Purpose |
+|---|---|---|
+| Log annotations | `Effect.annotateLogs`, `References.CurrentLogAnnotations` | Inherited structured fields on log events |
+| Log spans | `Effect.withLogSpan`, `References.CurrentLogSpans` | Active labels and elapsed milliseconds in log output |
+| Distributed tracing | `Effect.fn`, `Effect.withSpan`, `Effect.annotateCurrentSpan`, tracer layers | Parent/child trace spans, propagation, export, and cross-service correlation |
 
-Outputs structured JSON to stdout. This is the simplest path to queryable logs.
+`Effect.fn("Domain.operation")` creates a tracing span. `Effect.withLogSpan` only adds elapsed-time context to logs. Neither installs an OpenTelemetry exporter. `Logger.tracerLogger` records log events on the current trace span; keep or omit it deliberately when replacing the logger set.
+
+## Built-in v4 loggers
+
+`Logger.consoleJson` and `Logger.consolePretty()` write every supplied message, Cause, and annotation to the console. `Logger.formatJson` and `Logger.formatStructured` format values but do not write them by themselves. Treat the built-ins as development or trusted-input choices; they are not a production privacy boundary.
 
 ```ts
-import { Effect, Logger } from "effect"
+import { Effect, Logger, References } from "effect"
 
-const program = Effect.gen(function* () {
-  yield* Effect.logInfo("server started").pipe(
-    Effect.annotateLogs({ port: 3000 })
+const DevelopmentLoggerLive = Logger.layer([
+  Logger.consolePretty(),
+  Logger.tracerLogger,
+])
+
+const runnable = program.pipe(
+  Effect.provide(DevelopmentLoggerLive),
+  Effect.provideService(References.MinimumLogLevel, "Debug"),
+)
+```
+
+`Logger.layer([...])` replaces the active logger set by default. Pass `{ mergeWithExisting: true }` only when duplicate output is intended and understood. For production, use an adapter with an explicit event-field allowlist such as the Pino example below, then test the complete sink path with sensitive sentinels.
+
+`Logger.tracerLogger` forwards all current log annotations to trace span events. Include it only when every annotation producer obeys the same field allowlist; otherwise omit it until the trace-event path has equivalent filtering.
+
+## Request context
+
+Use static event names and attach only allowlisted fields. Annotations flow through the provided effect and child fibers without manually threading a logger.
+
+```ts
+type RequestLogContext = {
+  readonly request_id: string
+  readonly method: string
+  readonly route: string
+}
+
+const withRequestLogging = <A, E, R>(
+  effect: Effect.Effect<A, E, R>,
+  context: RequestLogContext,
+) =>
+  effect.pipe(
+    Effect.annotateLogs(context),
+    Effect.withLogSpan("http.request"),
+    Effect.withSpan("http.request", { kind: "server" }),
   )
-})
-
-// Provide the JSON logger at the edge
-program.pipe(
-  Effect.provide(Logger.json),
-  Effect.runPromise
-)
 ```
 
-Output:
-```json
-{"level":"INFO","message":"server started","timestamp":"2025-01-15T...","annotations":{"port":3000},"spans":[]}
-```
+This `RequestLogContext` is an application-neutral shape, not a framework request type. Derive `route` from the matched route template, not a raw URL containing identifiers or query parameters.
 
-### Logger.pretty (recommended for dev)
+## Pino adapter with complete runtime context
 
-Human-readable colored output for terminal development.
+In v4, `Logger.Options` contains `date`, `cause`, `fiber`, `logLevel`, and `message`. Log annotations and log spans are fiber references, so a custom adapter reads them with `fiber.getRef(References.CurrentLogAnnotations)` and `fiber.getRef(References.CurrentLogSpans)`.
 
 ```ts
-program.pipe(
-  Effect.provide(Logger.pretty),
-  Effect.runPromise
-)
-```
-
-### Logger.structured
-
-Similar to JSON but returns structured objects (useful if you want to post-process before shipping).
-
-## Custom Logger with Pino
-
-If you need pino-specific features (child loggers, custom serializers, redaction), build a custom logger:
-
-```ts
-import { Logger, Effect, Layer } from "effect"
+import { Cause, Logger, References } from "effect"
 import pino from "pino"
 
-const pinoInstance = pino({
-  level: "info",
-  // Redact sensitive fields before they hit the transport
-  redact: {
-    paths: ["*.password", "*.token", "*.ssn", "*.healthCardNumber"],
-    censor: "[REDACTED]",
-  },
-  serializers: {
-    err: pino.stdSerializers.err,
-  },
-})
+const pinoLogger = pino({ level: "info" })
 
-const PinoLogger = Logger.make(({ logLevel, message, annotations, spans, date }) => {
-  const level = logLevel.label.toLowerCase()
-  const annotationObj = Object.fromEntries(annotations)
-  const spanEntries = spans.map(
-    (s) => `${s.label}=${Date.now() - s.startTime}ms`
+const allowedAnnotationKeys: ReadonlySet<string> = new Set([
+  "alert",
+  "cause_kind",
+  "error_tag",
+  "http_status",
+  "method",
+  "operation",
+  "request_id",
+  "reason_count",
+  "route",
+  "service",
+])
+
+const allowlistedAnnotations = (
+  annotations: Readonly<Record<string, unknown>>,
+): Record<string, unknown> =>
+  Object.fromEntries(
+    Object.entries(annotations).filter(([key]) => allowedAnnotationKeys.has(key)),
   )
 
-  const logFn = pinoInstance[level] ?? pinoInstance.info
-  logFn.call(pinoInstance, {
-    ...annotationObj,
-    spans: spanEntries.length > 0 ? spanEntries : undefined,
-    msg: typeof message === "string" ? message : JSON.stringify(message),
-  })
-})
-
-// Create a Layer that replaces the default logger
-export const PinoLoggerLive = Logger.replace(Logger.defaultLogger, PinoLogger)
-```
-
-### Providing the Logger
-
-Provide once at the application entry point — never scatter logger setup through your codebase:
-
-```ts
-import { Effect, Layer } from "effect"
-
-const AppLive = Layer.mergeAll(
-  PinoLoggerLive,
-  DatabaseLive,
-  HttpClientLive,
-  // ... other layers
-)
-
-const main = program.pipe(Effect.provide(AppLive))
-
-Effect.runPromise(main)
-```
-
-## Swapping Loggers per Environment
-
-Use config or environment variables to select the logger layer:
-
-```ts
-const loggerLayer =
-  process.env.NODE_ENV === "production"
-    ? PinoLoggerLive      // structured JSON for prod
-    : Logger.pretty        // colored terminal for dev
-
-const AppLive = Layer.mergeAll(loggerLayer, DatabaseLive, HttpClientLive)
-```
-
-## Test Logger (Capturing Logs in Memory)
-
-For tests, capture log output in memory so you can assert on what was logged:
-
-```ts
-import { Effect, Logger, Ref, Array as Arr, Layer } from "effect"
-
-const makeTestLogger = Effect.gen(function* () {
-  const logs = yield* Ref.make<Array<{ level: string; message: string; annotations: Record<string, unknown> }>>([])
-
-  const logger = Logger.make(({ logLevel, message, annotations }) => {
-    const entry = {
-      level: logLevel.label,
-      message: typeof message === "string" ? message : JSON.stringify(message),
-      annotations: Object.fromEntries(annotations),
+const summarizeCause = (cause: Cause.Cause<unknown>) =>
+  cause.reasons.map((reason) => {
+    switch (reason._tag) {
+      case "Fail": {
+        const error = reason.error
+        const errorTag =
+          typeof error === "object" &&
+          error !== null &&
+          "_tag" in error &&
+          typeof error._tag === "string"
+            ? error._tag
+            : "untagged"
+        return { kind: "failure", error_tag: errorTag }
+      }
+      case "Die":
+        return { kind: "defect" }
+      case "Interrupt":
+        return {
+          kind: "interruption",
+          interruptor_fiber_id: reason.fiberId,
+        }
     }
-    // Ref.update is synchronous and safe to runSync here — don't use this pattern for effectful operations
-    Effect.runSync(Ref.update(logs, Arr.append(entry)))
   })
 
-  return { logger, logs } as const
-})
+const writePino = (
+  level: string,
+  fields: Record<string, unknown>,
+  message: string,
+) => {
+  switch (level) {
+    case "Trace":
+      return pinoLogger.trace(fields, message)
+    case "Debug":
+      return pinoLogger.debug(fields, message)
+    case "Warn":
+      return pinoLogger.warn(fields, message)
+    case "Error":
+      return pinoLogger.error(fields, message)
+    case "Fatal":
+      return pinoLogger.fatal(fields, message)
+    case "Info":
+    default:
+      return pinoLogger.info(fields, message)
+  }
+}
+
+const PinoLogger = Logger.make(
+  ({ cause, date, fiber, logLevel, message }) => {
+    const annotations = allowlistedAnnotations(
+      fiber.getRef(References.CurrentLogAnnotations),
+    )
+    const logSpansMs = Object.fromEntries(
+      fiber
+        .getRef(References.CurrentLogSpans)
+        .map(([label, startedAt]) => [label, date.getTime() - startedAt]),
+    )
+    const messages = Array.isArray(message) ? message : [message]
+    const event = messages.length === 1 && typeof messages[0] === "string"
+      ? messages[0]
+      : "effect.log.invalid_message"
+
+    return writePino(
+      logLevel,
+      {
+        timestamp: date.toISOString(),
+        effect_fiber_id: fiber.id,
+        ...annotations,
+        log_spans_ms: logSpansMs,
+        cause: cause.reasons.length === 0 ? undefined : summarizeCause(cause),
+      },
+      event,
+    )
+  },
+)
+
+export const PinoLoggerLive = Logger.layer([PinoLogger])
 ```
 
-Usage in tests:
+The adapter deliberately:
+
+- preserves the Effect event time instead of substituting adapter wall-clock time;
+- records the current fiber id and computes active log-span durations against that event time;
+- represents every reason in a composite Cause, while omitting typed-error payloads;
+- records bounded defect classifications and keeps interruptions distinct without serializing thrown values, messages, or stacks;
+- drops annotation keys outside the explicit allowlist and omits `Logger.tracerLogger` so it cannot bypass that filter.
+
+The adapter accepts one static string as the event name and replaces any other message shape instead of serializing arbitrary payloads. If an incident workflow requires defect detail, sanitize it through a separately defined policy and send it to a dedicated access-controlled sink; this adapter remains bounded. Normalize third-party throws before they enter the error channel, restrict sink access/retention, and add deployment-specific redaction for known secrets. Redaction is defense in depth; it is not a substitute for the event-field allowlist.
+
+## Test capture
+
+`Logger.make` is synchronous, so tests can snapshot the values needed for assertions and install the logger with `Logger.layer`.
 
 ```ts
-import { it, expect } from "@effect/vitest"
+import { Effect, Logger, References } from "effect"
 
-it.effect("logs payment processing", () =>
-  Effect.gen(function* () {
-    const { logger, logs } = yield* makeTestLogger
-    const testLoggerLayer = Logger.replace(Logger.defaultLogger, logger)
+type CapturedLog = {
+  readonly level: string
+  readonly messages: ReadonlyArray<unknown>
+  readonly annotations: Readonly<Record<string, unknown>>
+}
 
-    yield* processPayment("order-123").pipe(Effect.provide(testLoggerLayer))
-
-    const captured = yield* Ref.get(logs)
-    expect(captured).toContainEqual(
-      expect.objectContaining({
-        level: "INFO",
-        message: expect.stringContaining("payment completed"),
-      })
-    )
+const captured: Array<CapturedLog> = []
+const TestLogger = Logger.make(({ fiber, logLevel, message }) => {
+  captured.push({
+    level: logLevel,
+    messages: Array.isArray(message) ? [...message] : [message],
+    annotations: {
+      ...fiber.getRef(References.CurrentLogAnnotations),
+    },
   })
+})
+
+const TestLoggerLive = Logger.layer([TestLogger])
+
+const testProgram = program.pipe(
+  Effect.provide(TestLoggerLive),
 )
 ```
 
-## Log Level Filtering
-
-Set the minimum log level to reduce noise in prod:
-
-```ts
-import { Logger, LogLevel } from "effect"
-
-// Only show info and above in prod
-const filteredLogger = Logger.minimumLogLevel(LogLevel.Info)
-
-// Combine with your logger implementation
-const ProdLoggerLive = Layer.mergeAll(PinoLoggerLive, filteredLogger)
-```
-
-## PII Redaction Strategy
-
-For PHIPA/PIPEDA compliance, handle PII at the serialization boundary — not in business logic:
-
-1. **Pino redaction paths** (shown above) — declare sensitive field paths and pino redacts them before they hit the transport.
-2. **Custom annotation sanitizer** — if using the built-in JSON logger, wrap it to strip known sensitive keys before output.
-3. **Don't log request/response bodies by default** — they're large and likely contain PII. Log summaries (status code, content-length, duration) instead.
-
-The guiding principle: business logic should log freely using annotations. The logger layer is responsible for ensuring nothing sensitive leaves the process.
+Assert event name, severity, and allowlisted fields. Add explicit tests for Cause, fiber id, date, and log-span handling when those are part of a custom adapter's contract.

@@ -1,83 +1,78 @@
 ---
 name: fly-optimization
-description: >
-  Opinionated best practices for deploying and configuring apps on Fly.io.
-  Use this skill whenever a Fly.io deployment is being created, reviewed, or modified —
-  including fly.toml configuration, process topology decisions, postgres setup, secrets,
-  networking between apps, or autostop/autostart settings. Trigger on any mention of
-  fly.io, fly.toml, fly deploy, fly pg, fly mpg, flycast, .internal networking, or
-  process groups in a deployment context.
+description: "Design and review Fly.io deployments: app topology, Postgres choice, Fly Proxy lifecycle, private networking, and observability."
 ---
 
-# Fly.io Optimization
+# Fly.io Deployment Design
 
-Opinionated best practices for consistent, production-ready Fly.io deployments.
+Use the current application requirements and deployed state. Treat prices, regions, retention, limits, and provider capabilities as volatile; verify them in the linked official docs during the run.
 
-Start here to determine the correct architecture, then load the appropriate reference doc for the full pattern.
+## 1. Choose the topology
 
----
+Choose **process groups** only when every answer is yes:
 
-## Step 1: Determine Topology
+- One image contains every process.
+- One deployment may update every process together.
+- Every process may receive every app secret.
+- App-level ownership, network allocation, and release history are acceptable for every process.
 
-**Use `[processes]` in a single app when:**
-- Same codebase and Docker image
-- Same deploy cadence (one deploy = both services redeploy, and that's fine)
-- Shared secrets are acceptable across all processes
+Choose **separate apps** when any answer is no, or when a private service needs Fly Proxy autostart without sharing a public app's network exposure.
 
-**Use separate Fly apps when:**
-- Different codebases / repos
-- Need independent deploy cadences
-- Need secret isolation between services
-- One service is public, another is internal-only and owned separately
+Write down the four answers and the selected topology. The step is complete when each process has an image, deploy cadence, secret boundary, owner, exposure, and wake path.
 
----
+## 2. Choose the database
 
-## Step 2: Determine Postgres
+Choose exactly one:
 
-**Fly MPG (Managed Postgres)** — when ops overhead needs to be zero, client has no custom extension requirements, budget supports it (~$38+/mo base)
+- **Fly Managed Postgres (MPG):** required availability, backups, recovery, support, and connection pooling fit MPG; every required region and extension is listed in current MPG docs; current pricing fits the approved budget.
+- **Unmanaged Fly Postgres:** the team explicitly accepts an unsupported, self-managed database and owns sizing, patching, backup/restore testing, monitoring, alerting, and outage recovery.
+- **External Postgres:** an existing provider, compliance boundary, required feature, or portability requirement outweighs cross-provider latency and egress; TLS, pooling, region, and recovery are confirmed with that provider.
 
-**Fly pg (unmanaged)** — when budget-conscious, need custom extensions (TimescaleDB etc), or comfortable owning db operations
+Record evidence for every criterion. If the deployment has no Postgres dependency, record `database: not applicable` and load no database reference.
 
-**External provider (Supabase, Neon, etc.)** — when client already has a provider, needs features neither MPG nor fly pg offer, or Postgres needs to live outside Fly entirely
+Current-doc checks:
 
----
+- [MPG overview, regions, capabilities, and pricing](https://fly.io/docs/mpg/)
+- [MPG extensions](https://fly.io/docs/mpg/extensions/)
+- [Unmanaged Fly Postgres responsibility boundary](https://fly.io/docs/postgres/getting-started/what-you-should-know/)
 
-## Step 3: Load the Reference Doc
+The step is complete when the selected option satisfies all of its criteria and no rejected option has an unmet requirement that the selection would solve.
 
-Based on the above, load the relevant file from `references/`:
+## 3. Load only the applicable references
 
-| Topology | Postgres | Reference doc |
-|----------|----------|---------------|
-| Process groups | Fly pg | `references/process-groups-fly-pg.md` |
-| Process groups | MPG | `references/process-groups-mpg.md` |
-| Process groups | External | `references/process-groups-external.md` |
-| Separate apps | Fly pg | `references/separate-apps-fly-pg.md` |
-| Separate apps | MPG | `references/separate-apps-mpg.md` |
-| Separate apps | External | `references/separate-apps-external.md` |
+Load exactly one topology reference:
 
----
+- Process groups: [`references/process-groups.md`](references/process-groups.md)
+- Separate apps: [`references/separate-apps.md`](references/separate-apps.md)
 
-## Shared Conventions (apply to all patterns)
+Load exactly one database reference when Postgres applies:
 
-### Naming
-- Format: `{env}-{appname}` — e.g. `prod-myapp`, `staging-myapp`
-- Separate Fly app per environment, same org
-- Separate `fly.toml` per environment
-- Deploy: `fly deploy --config fly.prod.toml --app prod-myapp`
+- MPG: [`references/fly-mpg.md`](references/fly-mpg.md)
+- Unmanaged Fly Postgres: [`references/fly-postgres.md`](references/fly-postgres.md)
+- External Postgres: [`references/external-postgres.md`](references/external-postgres.md)
+
+For every environment whose log production, search, retention, access, or export is changing, load the applicable profile:
+
+- Production, or any environment containing production data: [`references/logging-production.md`](references/logging-production.md)
+- Non-production without production data: [`references/logging-non-production.md`](references/logging-non-production.md)
+
+Load both profiles when a change spans both classes. Load [`references/metrics.md`](references/metrics.md) when changing metrics, dashboards, API queries, or alerts. Do not load the other topology or database files.
+
+The step is complete when the design applies every rule from the loaded files and contains no configuration copied from an inapplicable branch.
+
+## 4. Apply shared guardrails
 
 ### Secrets
-- Always `fly secrets set` — no `.env` files, no committed credentials
-- Set independently per app and environment
-- With process groups, secrets are shared across all groups — if isolation is needed, use separate apps instead
 
-### Autostop
-- **Default: off.** Production apps keep machines running
-- **Exception:** lightly-used background workers (e.g. image processing) use `auto_stop_machines = "suspend"`
-- Prefer `"suspend"` over `"stop"` — faster resume, same cost benefit at low traffic
+Use app secrets for runtime credentials. A secret is available to every Machine in its app, so process groups cannot provide secret isolation. Remember that setting a secret restarts or updates Machines unless it is staged.
 
-### Static Assets
+### Environment identity
 
-Don't run a separate file server process for static assets. Fly can serve them directly from the proxy — it pulls them out of your container at deploy time and serves from the edge:
+Use separate apps per environment and names that make the environment explicit, such as `prod-example` and `staging-example`. Keep each environment's config explicit and deploy with both `--config` and `--app`; never infer the production target from the current directory. Classify logging per environment from its data and operational requirements rather than assuming one policy applies to every app.
+
+### Static assets
+
+Use `[[statics]]` only to bypass the application server for files available inside the running Machine:
 
 ```toml
 [[statics]]
@@ -85,77 +80,35 @@ Don't run a separate file server process for static assets. Fly can serve them d
   url_prefix = "/public"
 ```
 
-Faster than serving from your app, and one less process to manage.
+Fly Proxy routes matching requests to a static file server inside the Machine. This is not edge hosting or a CDN: a Machine must run, or autostart must wake one. Verify current behavior and caveats in the [`[[statics]]` configuration reference](https://fly.io/docs/reference/configuration/#the-statics-sections).
 
-### Metrics
+### Docker process and install lifecycle
 
-Fly includes a fully managed Prometheus + Grafana stack at fly-metrics.net. Built-in metrics (proxy, VM, OOM detection) are automatic. Custom metrics require a `/metrics` endpoint and a `[metrics]` block in fly.toml. See `references/metrics.md`.
+Process-group commands replace image `CMD` and remain arguments to `ENTRYPOINT`. Prefer no wrapper; when one is required, forward the command and signals:
 
-### Logging
-
-Write to stdout. Fly captures it automatically. See `references/logging.md` for how the stack works and how to access logs.
-
-
-All public-facing services expose `GET /health` returning `200 OK`. Lightweight — no db queries unless gating on db connectivity is intentional.
-
-```toml
-[[http_service.checks]]
-  grace_period = "10s"
-  interval = "30s"
-  method = "GET"
-  path = "/health"
-  protocol = "http"
-  timeout = "5s"
+```sh
+#!/bin/sh
+set -eu
+exec "$@"
 ```
 
-### Process Group Lifecycle
+Build with all dependencies needed to compile, then copy built artifacts into the runtime stage. Use a production-only install only after every workspace runtime dependency is correctly declared. For Bun, `--ignore-scripts` skips the root project's lifecycle scripts; dependency scripts are controlled separately by Bun's trust model. Use it only when required project install/prepare work is run explicitly, rather than as a blanket Docker default. Verify against [Bun lifecycle scripts](https://bun.com/docs/pm/cli/install#lifecycle-scripts) and [Docker `ENTRYPOINT`/`CMD`](https://docs.docker.com/reference/dockerfile/#understand-how-cmd-and-entrypoint-interact).
 
-**Every process group must have either `[http_service]` or `[[services]]`.** A `[checks]` block alone only monitors — it does NOT manage the machine's lifecycle. Without a service definition, a process group's machine:
-- Has no `auto_start_machines` (won't restart after crashes)
-- Has no `min_machines_running` (may stay stopped after deploys)
-- Gets created during deploy but Fly won't keep it alive
+## 5. Apply and validate
 
-Pattern for internal-only processes (API servers, workers accessed via `.internal`):
+Before changing Fly resources:
 
-```toml
-[[services]]
-  processes = ["api"]
-  internal_port = 8081
-  protocol = "tcp"
-  auto_stop_machines = "off"
-  auto_start_machines = true
-  min_machines_running = 1
+1. Replace every example app, region, port, Machine size, concurrency limit, timeout, and count with a requirement or a measured value.
+2. Run `fly config validate --config <fly.toml>` for every config.
+3. Confirm secrets, public and Flycast IPs, `.internal` or `.flycast` callers, release command, and rollback path. When a database applies, also confirm its attachment target.
+4. Review the rendered diff; apply only when no example placeholder or unverified volatile claim remains.
 
-  [[services.http_checks]]
-    interval = "30s"
-    timeout = "5s"
-    grace_period = "10s"
-    method = "GET"
-    path = "/health"
-```
+After applying:
 
-**`[checks]` ≠ `[[services]]`.** Checks tell you something is wrong. Services keep things running.
+1. Run `fly status --app <app>` and `fly checks list --app <app>` for every app.
+2. Exercise each public route and each private route from a Machine on the intended network.
+3. Prove every always-on process restarts after a non-zero exit; prove every autostopped service wakes through Fly Proxy; prove direct `.internal` callers do not depend on waking stopped Machines.
+4. Complete each applicable branch: verify database connectivity and migrations when a database applies; validate logs when a logging profile was loaded; run the required metrics query when the metrics reference was loaded.
+5. Confirm the deployed Machine count, region, size, restart policy, IP allocation, and secret names match the design.
 
-### Dockerfile (Bun / Node monorepos)
-
-**Don't use `--production` with Bun workspace monorepos.** `bun install --production` strips devDependencies from ALL workspace packages, not just the root. Workspace packages commonly miscategorize runtime deps as devDeps, causing silent startup failures in production.
-
-**Always use `--ignore-scripts` in the production stage.** The `prepare` lifecycle script (typically `husky`) runs during install. In production Docker images, husky and other dev tooling aren't available. Skip it:
-
-```dockerfile
-# Runner stage
-COPY package.json bun.lock ./
-COPY packages ./packages
-COPY apps ./apps
-RUN bun install --frozen-lockfile --ignore-scripts
-```
-
-The same applies to npm/pnpm — `npm ci --ignore-scripts` is standard for production Docker builds.
-
-### Networking
-- All apps in the same org share a private IPv6 network (6PN)
-- Internal traffic uses `.internal` DNS: `http://prod-myapi.internal:3000`
-- **Your app must bind to `::` (all interfaces), not `127.0.0.1` or `0.0.0.0`** — 6PN is IPv6-only, so binding to an IPv4 address makes the service unreachable via `.internal`
-- Never route internal traffic through public URLs
-- No public `[[services.ports]]` on internal-only apps — absence of public ports = not internet-reachable, still 6PN-reachable
-
+The deployment is complete only when every check passes with captured command output. On failure, stop rollout or roll back; do not classify a successful `fly deploy` alone as validation.

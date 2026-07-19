@@ -1,298 +1,96 @@
 ---
 name: code-review-loop
-description: Open a PR, iterate on Greptile feedback until it reaches 5/5, merge, then monitor and unblock the deployment from main.
+description: "Run an explicitly requested PR-to-deployment loop: publish a PR, reach Greptile 5/5, merge, and verify deployment. Use only when the user asks for the full lifecycle."
 ---
 
-# Greptile PR Deploy Loop
+# Code Review Loop
 
-Use this skill when the user wants the agent to take completed working-tree changes through PR review, Greptile cleanup, merge, and deployment verification.
+Own only the explicitly requested PR-to-deployment lifecycle. Start from a merge-ready tree produced by `finalize` or equivalent evidence; general hardening belongs to `finalize`, and behavior-preserving cleanup belongs to `simplify`.
 
-## Goal
+## Authorization and Outcomes
 
-Turn the current branch into a merged PR with a passing deployment from `main`.
+Start when the current conversation explicitly authorizes the full lifecycle: publish the branch, open or update the PR, handle review feedback, merge after the gate passes, and monitor and recover the resulting deployment. Missing authorization produces `BLOCKED_AUTHORIZATION` before the first ungranted transition.
 
-The loop is:
+The terminal outcomes are:
 
-1. Open a PR.
-2. Wait for Greptile.
-3. Fix Greptile comments.
-4. Push updates.
-5. Repeat until Greptile is 5/5.
-6. Merge.
-7. Monitor deployment from `main`.
-8. Fix deployment blockers on `main` if needed.
+- `DEPLOYED`: every merge and deployment gate passed.
+- `BLOCKED_PREFLIGHT`: the tree, repository state, base branch, or required access is not ready.
+- `BLOCKED_REVIEW`: the latest head SHA cannot reach the review gate within its budget.
+- `BLOCKED_MERGE`: the review gate passed but policy, permissions, or platform state prevents a verified merge.
+- `BLOCKED_DEPLOYMENT`: deployment cannot pass within the recovery budget or requires an unsafe/unauthorized decision.
 
-## Rules
+Use normal additive commits and pushes. A force push, direct base-branch commit, production-data mutation, secret/permission change, billing change, or infrastructure policy change requires separate explicit authorization and repository support.
 
-Do not merge unless:
+## Resolve Invariants
 
-- Greptile is 5/5.
-- Required checks are passing.
-- The branch is up to date enough for the repository's merge policy.
-- There are no unresolved blocking review comments.
-- The PR contains only the intended changes.
+Before changing repository state:
 
-Do not force-push unless explicitly requested.
+1. Read applicable repository instructions and discover commit, PR, merge, required-check, and deployment policies.
+2. Resolve `<base-branch>` from the user's explicit target when supplied; an existing PR base must match it. With no explicit target, use the existing PR base, then the remote default from provider metadata or `origin/HEAD`. Verify the branch exists remotely, record it once, and use `<base-branch>` throughout.
+3. Resolve the topic branch, remote, PR platform, required reviewers/checks, merge method, deployment provider, and required deployment targets.
+4. Record finite budgets. Use repository/user values when supplied; otherwise use five reviewed head SHAs per PR, 20 minutes of review polling per head SHA at intervals of at least 60 seconds, two deployment-recovery attempts, and 30 minutes per required deployment.
 
-Do not rewrite unrelated code to satisfy vague review feedback.
+Invariant resolution is complete when every placeholder above has one evidenced value and every budget is finite. Conflicting or missing material values produce `BLOCKED_PREFLIGHT`.
 
-Do not make cosmetic churn just to appease a reviewer.
+## Preflight and Publish
 
-Do not commit secrets, generated artifacts, local env files, debug logs, or editor files.
+Require a `TREE_MERGE_READY` result for the current tree or equivalent evidence covering scope, findings, simplification, and validation. Otherwise return `BLOCKED_PREFLIGHT` and route preparation to `finalize`.
 
-If deployment fails after merge, fix only the blocker needed to restore `main`.
+Inspect current status, branch, full intended diff, untracked files, and `git diff --check`. Confirm that unrelated work is excluded from staging and that intended generated artifacts, secrets policy, and repository checks still match the readiness evidence.
 
-Prefer small follow-up commits over broad rewrites.
+When the current branch is `<base-branch>`, create the authorized topic branch before staging. Stage only intended files, inspect the staged diff and check it, commit under repository policy, and push normally. Reuse an existing PR for the topic branch or open one with the change, rationale, validation, and material caveats.
 
-## Inputs
+Preflight is complete when the remote topic head equals local `HEAD`, the PR targets `<base-branch>`, and the PR diff contains exactly the intended changes.
 
-- Current working tree
-- Current branch
-- Repository remote
-- Existing test/typecheck/lint commands
-- Greptile PR comments and score
-- Deployment provider status/logs
+## Bounded Head-SHA Review
 
-## Workflow
+Each PR gets an independent head-SHA budget. A cycle is bound to one immutable `<head-sha>`:
 
-### 1. Preflight
+1. Capture the remote PR head SHA after each push and increment the reviewed-head count. A SHA beyond the configured count produces `BLOCKED_REVIEW`.
+2. Poll until the per-SHA deadline for Greptile output and required checks that platform evidence ties to that exact SHA. Older comments and scores remain history, not current evidence.
+3. Record the Greptile score, required-check results, blocking threads, and a disposition for every current comment: fix, already addressed, incorrect/outdated, out of scope, or behavior-risk decision.
+4. Route cleanup-only fixes through `simplify` with the PR's resolved `<base-branch>` and current `<head-sha>` as its effective diff. Apply correctness fixes only when repository evidence gives a clear in-scope answer; validate every invalidated surface. Reply with evidence for no-change dispositions.
+5. Commit and push one coherent correction set. The new remote SHA begins the next cycle; the prior cycle cannot satisfy its gate.
 
-Inspect the repo state:
+A behavior-risk decision that needs product or contract intent, a required check failing for an unrelated cause, unavailable review evidence at the deadline, or an exhausted head budget produces `BLOCKED_REVIEW` with the exact evidence.
 
-    git status --short
-    git branch --show-current
-    git diff --stat
-    git diff --check
+## Merge Gate
 
-Confirm the branch is not `main` or `master`.
+Merge only when all statements are true at the same observed `<head-sha>`:
 
-If currently on `main` or `master`, create a new branch before committing:
+- `<head-sha>` equals the latest remote PR head.
+- Greptile reports 5/5 for `<head-sha>`.
+- Every required check reports success for `<head-sha>`.
+- Every blocking thread is resolved and every review comment has a recorded disposition.
+- The PR is mergeable and satisfies the repository's update and approval policy.
+- A fresh comparison against `<base-branch>` contains exactly the intended diff.
 
-    git checkout -b <short-descriptive-branch-name>
+Use the repository's established merge method. Capture `<merged-sha>` from the platform, then verify that remote `<base-branch>` contains it or, for squash/rebase workflows, contains the platform-reported resulting commit. Failure of any statement produces `BLOCKED_MERGE`; review failures return to the bounded review loop only while budget remains.
 
-Inspect the diff before committing:
+## Deployment Gate
 
-    git diff --unified=80
+Locate each required deployment triggered by the resulting `<merged-sha>` or by a later `<base-branch>` commit proven to contain it. Monitor each until success or its deadline, retaining provider status and relevant build, migration, runtime, and health evidence.
 
-Run the narrowest obvious checks before opening the PR.
+Report `DEPLOYED` only when all statements are true:
 
-Prefer:
+- The PR is merged into the resolved `<base-branch>` and remote history contains the platform-reported result.
+- Every required deployment is tied to that result or a proven descendant on `<base-branch>`.
+- Every required deployment and post-deploy health/release check reports terminal success within its deadline.
+- No required target remains pending, failed, cancelled, or timed out.
 
-- targeted tests
-- package-level typecheck
-- package-level lint
-- existing CI-equivalent command if cheap
+## Bounded Deployment Recovery
 
-If checks fail because of the current changes, fix them before opening the PR.
+When a required deployment fails, diagnose the smallest causal blocker from provider evidence. An unrelated failure, unclear causality, or a fix requiring a separately authorized action produces `BLOCKED_DEPLOYMENT`.
 
-### 2. Commit and push
+For each available recovery attempt:
 
-Stage only relevant files.
+1. Increment the recovery count, update remote `<base-branch>`, and create a recovery branch from that exact tip. The default recovery path is branch plus PR; the base branch remains an integration target rather than an editing workspace.
+2. Apply only the causal fix and run `finalize` to establish `TREE_MERGE_READY` for the recovery diff.
+3. Publish a recovery PR targeting `<base-branch>`. Give it a fresh bounded head-SHA review loop and require the complete merge gate.
+4. Capture the new merge result and rerun the complete deployment gate for every invalidated target.
 
-Review staged changes:
+Use a direct `<base-branch>` commit only when the user separately authorizes it in the current conversation and repository policy permits it. Exhausting the recovery count or any recovery PR's review budget produces `BLOCKED_DEPLOYMENT`.
 
-    git diff --cached --stat
-    git diff --cached --check
+## Report
 
-Commit with a concise message.
-
-Push the branch:
-
-    git push -u origin HEAD
-
-### 3. Open or find the PR
-
-If a PR already exists for this branch, use it.
-
-Otherwise create one.
-
-The PR body should include:
-
-- what changed
-- why it changed
-- how it was verified
-- any known caveats
-
-Keep it short.
-
-### 4. Wait for Greptile
-
-Check whether Greptile has posted a score.
-
-If Greptile has not commented yet:
-
-- sleep 60 seconds
-- check again
-- repeat until Greptile comments appear
-
-Once Greptile has commented, inspect:
-
-- score
-- inline comments
-- summary comments
-- unresolved threads
-- suggested fixes
-
-If Greptile score is less than 5/5:
-
-- sleep 5 minutes before the next full score check
-- use the comments to prepare fixes
-- apply fixes
-- push
-- return to the Greptile wait/check loop
-
-Do not treat old Greptile comments as current after pushing a new commit. Wait for the review corresponding to the latest commit.
-
-### 5. Fix Greptile comments
-
-For each comment, classify it as:
-
-- valid blocker
-- valid cleanup
-- already addressed
-- incorrect / not applicable
-- risky because it would change behavior
-
-Apply fixes for valid blocker and valid cleanup comments.
-
-For incorrect, stale, or risky comments:
-
-- do not blindly change the code
-- leave a concise PR reply explaining why it was not changed, if the harness supports PR comments
-- continue the loop and let Greptile re-evaluate
-
-Fix style:
-
-- make the smallest behavior-preserving change
-- prefer repository conventions over Greptile's generic preference
-- preserve public APIs unless the PR intentionally changes them
-- add or update tests only when needed
-- do not broaden the scope of the PR
-
-After fixing:
-
-    git status --short
-    git diff --stat
-    git diff --check
-
-Run relevant checks.
-
-Commit fixes with a concise message.
-
-Push:
-
-    git push
-
-Return to Step 4.
-
-### 6. Exit condition
-
-Exit the review loop only when:
-
-- Greptile score is 5/5 for the latest pushed commit
-- required CI checks are green
-- no blocking review threads remain
-
-Then merge the PR using the repository's normal merge method.
-
-Prefer the repo's established policy:
-
-- squash merge if that is the default
-- merge commit if that is the default
-- rebase merge only if that is the default
-
-Do not delete the branch unless that is normal for the repo or the platform does it automatically.
-
-### 7. Monitor deployment from main
-
-After merge, switch to and update `main`:
-
-    git checkout main
-    git pull --ff-only
-
-Find the deployment triggered by the merge commit.
-
-Monitor until it reaches a terminal state:
-
-- success
-- failure
-- cancelled
-- timed out
-
-Check:
-
-- deployment status
-- build logs
-- runtime logs if the build succeeded but health checks failed
-- migrations if relevant
-- environment variable or secret errors
-- dependency or lockfile errors
-- typecheck/lint/test failures
-
-### 8. If deployment fails
-
-Fix only the blocker needed to restore deployment from `main`.
-
-Before editing:
-
-    git status --short
-    git log --oneline -5
-
-Confirm you are on `main`.
-
-Apply the minimal fix.
-
-Run the narrowest local check that validates the fix.
-
-Commit directly to `main` only when the repo allows direct main commits for deployment unblocks.
-
-If direct main commits are not allowed, create a hotfix branch and PR instead.
-
-Push the fix:
-
-    git push origin main
-
-Monitor deployment again from Step 7.
-
-Repeat until deployment passes.
-
-## Handling uncertainty
-
-Stop and report instead of guessing when:
-
-- Greptile score is unavailable or ambiguous for a long time
-- the PR platform cannot be accessed
-- required CI is red for reasons unrelated to this PR
-- deployment failure appears unrelated to the merge
-- fixing deployment requires secrets, infra changes, billing changes, or production data access
-- the repository forbids direct commits to `main`
-- merge permissions are missing
-
-## Final response
-
-Keep the response short.
-
-Use this format:
-
-    PR:
-      <PR title or number>
-      <PR URL if available>
-
-    Greptile:
-      ✓ 5/5 on latest commit
-      - Fixed N comments
-      - Skipped M comments with replies
-
-    Merge:
-      ✓ Merged into main using <merge method>
-
-    Deployment:
-      ✓ Deployment passed
-      <deployment URL if available>
-
-    Verification:
-      ✓ <command>
-      ✓ <command>
-
-    Follow-ups:
-      - <only include real follow-ups, or say none>
+Return the terminal outcome; `<base-branch>`; PR URL; latest reviewed head SHA and budget usage; Greptile score, checks, and comment dispositions; merge method and resulting SHA; deployment targets, URLs, and evidence; recovery usage; and every blocker. Claim success only as `DEPLOYED` after the complete deployment gate passes.

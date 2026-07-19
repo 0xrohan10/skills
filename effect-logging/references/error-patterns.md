@@ -1,175 +1,129 @@
-# Error Patterns in Effect-TS
+# Error Modeling and Recovery
 
-## Schema.TaggedErrorClass
+Read this reference when defining errors, normalizing external failures, choosing failure versus defect, or adding typed recovery.
 
-Define all domain errors with `Schema.TaggedErrorClass`. These are serializable, type-safe, yieldable directly in generators (no `Effect.fail` wrapper needed), and carry a `_tag` for pattern matching.
+## Schema-backed typed errors
+
+Current Effect v4 defines schema-backed yieldable errors with `Schema.TaggedErrorClass<Self>()(tag, fields)`. They carry `_tag`, extend `Error`, and can be yielded directly in `Effect.gen`.
 
 ```ts
-import { Schema } from "effect"
+import { Effect, Schema } from "effect"
 
-class ValidationError extends Schema.TaggedErrorClass("ValidationError")(
+class ValidationError extends Schema.TaggedErrorClass<ValidationError>()(
   "ValidationError",
   {
     field: Schema.String,
-    message: Schema.String,
-  }
+    issue: Schema.String,
+  },
 ) {}
 
-class NotFoundError extends Schema.TaggedErrorClass("NotFoundError")(
+class NotFoundError extends Schema.TaggedErrorClass<NotFoundError>()(
   "NotFoundError",
   {
     resource: Schema.String,
-    id: Schema.String,
-  }
+  },
 ) {}
 
-class PaymentDeclinedError extends Schema.TaggedErrorClass("PaymentDeclinedError")(
-  "PaymentDeclinedError",
-  {
-    orderId: Schema.String,
-    reason: Schema.String,
-    gateway: Schema.String,
-  }
-) {}
-```
+interface User {
+  readonly id: string
+}
 
-The first argument to `Schema.TaggedErrorClass` sets the `_tag` discriminant value used for `catchTag` matching at runtime. The second argument sets the TypeScript class name. They are almost always the same string — the API separates them because `_tag` is a runtime value while the class name is a compile-time identifier.
+declare const lookupUser: (id: string) => Effect.Effect<User | undefined>
 
-Tagged errors are yieldable — you can yield them directly in a generator to fail:
-
-```ts
-const findUser = Effect.fn("findUser")(function* (id: string) {
-  const user = yield* db.query(`SELECT * FROM users WHERE id = $1`, [id])
-  if (!user) {
-    yield* new NotFoundError({ resource: "User", id })
+const findUser = Effect.fn("User.find")(function* (id: string) {
+  const user = yield* lookupUser(id)
+  if (user === undefined) {
+    return yield* new NotFoundError({ resource: "User" })
   }
   return user
 })
 ```
 
-## Schema.Defect for External Errors
-
-When calling third-party SDKs (stripe, twilio, external APIs), the errors they throw are unknown — random JS objects, strings, Error subclasses with non-serializable properties. `Schema.Defect` wraps any unknown thrown value into a serializable form.
+Use the error union inferred by composition. Define a schema union only when a public wire, persistence, RPC, or schema-tooling boundary needs one.
 
 ```ts
-class StripeError extends Schema.TaggedErrorClass("StripeError")(
-  "StripeError",
-  {
-    endpoint: Schema.String,
-    statusCode: Schema.Number,
-    idempotencyKey: Schema.optional(Schema.String),
-    error: Schema.Defect,
-  }
+class PaymentDeclinedError extends Schema.TaggedErrorClass<PaymentDeclinedError>()(
+  "PaymentDeclinedError",
+  { reasonCode: Schema.String },
 ) {}
 
-const chargeCard = (orderId: string, amount: number) =>
-  Effect.tryPromise({
-    try: () =>
-      stripe.charges.create({ amount, currency: "cad", source: orderId }),
-    catch: (error) =>
-      new StripeError({
-        endpoint: "/v1/charges",
-        statusCode: 500,
-        idempotencyKey: orderId,
-        error,
-      }),
-  })
-```
+class PaymentProviderError extends Schema.TaggedErrorClass<PaymentProviderError>()(
+  "PaymentProviderError",
+  {
+    operation: Schema.String,
+    cause: Schema.Defect(),
+  },
+) {}
 
-`Schema.Defect` handles:
-- JS Error instances → serialized as `{ name, message }`
-- Unknown values → string representation
-- Circular references → safely handled
-
-This matters for logging because you can safely `JSON.stringify` the entire error without worrying about serialization blowups.
-
-## Error Unions
-
-Group related errors into unions for handler signatures:
-
-```ts
-const PaymentError = Schema.Union(PaymentDeclinedError, StripeError)
+const PaymentError = Schema.Union(
+  PaymentDeclinedError,
+  PaymentProviderError,
+)
 type PaymentError = typeof PaymentError.Type
 ```
 
-Use the union as the `E` type parameter in function signatures:
+## External failures
+
+Normalize thrown or rejected values at the adapter boundary. Store only fields the application needs to route or diagnose the failure.
 
 ```ts
-const processPayment = (
-  orderId: string, amount: number
-): Effect.Effect<Charge, PaymentError, StripeService> =>
-  Effect.gen(function* () {
-    const charge = yield* chargeCard(orderId, amount)
-    return charge
-  })
-```
+interface Charge {
+  readonly id: string
+}
 
-## Expected Errors vs Defects
+declare const createProviderCharge: (
+  orderId: string,
+  amountCents: number,
+) => Promise<Charge>
 
-**Expected errors (the E channel):** Domain failures the caller can handle. Validation errors, not-found, permission denied, rate limits, payment declined. These are typed, recoverable, and should be logged at `warn` level.
-
-**Defects:** Bugs, invariant violations, things that should never happen. A null where your types say there shouldn't be one, a config that fails to load at startup. These terminate the fiber and are handled once at the system boundary. Log at `error` or `fatal`.
-
-```ts
-// Expected: caller can handle this
-const findUser = Effect.fn("findUser")(function* (id: string) {
-  const row = yield* db.query(id)
-  if (!row) yield* new NotFoundError({ resource: "User", id })
-  return row
-})
-
-// Defect: if config can't load, nothing works — die immediately
-const main = Effect.gen(function* () {
-  const config = yield* loadConfig.pipe(Effect.orDie)
-  yield* Effect.logInfo(`starting on port ${config.port}`)
-})
-```
-
-## Recovery with catchTag / catchTags
-
-Handle specific error types by their tag:
-
-```ts
-const recovered = program.pipe(
-  Effect.catchTag("NotFoundError", (err) =>
-    Effect.gen(function* () {
-      yield* Effect.logWarning(`${err.resource} not found: ${err.id}`)
-      return fallbackValue
-    })
-  )
-)
-```
-
-Handle multiple types at once:
-
-```ts
-const recovered = program.pipe(
-  Effect.catchTags({
-    NotFoundError: (err) => Effect.succeed(null),
-    ValidationError: (err) =>
-      Effect.gen(function* () {
-        yield* Effect.logWarning("validation failed").pipe(
-          Effect.annotateLogs({ field: err.field })
-        )
-        return null
+const chargeCard = (orderId: string, amountCents: number) =>
+  Effect.tryPromise({
+    try: () => createProviderCharge(orderId, amountCents),
+    catch: (cause) =>
+      new PaymentProviderError({
+        operation: "payments.createCharge",
+        cause,
       }),
   })
-)
 ```
 
-**When to catch vs propagate:** Catch when the calling function has a meaningful fallback — return a default, retry with different parameters, or degrade gracefully. Propagate when the caller can't do anything useful — let the error reach the centralized handler (see `error-handler.md`) where it gets logged and mapped to an HTTP response. Most domain errors should propagate; catch only at boundaries where the business logic genuinely has an alternative path.
+`Schema.Defect()` supplies an `unknown` runtime value with a JSON encoding when the schema encoder is explicitly used. It is lossy for values JSON cannot faithfully represent; it does not make direct `JSON.stringify(error)` safe or guarantee round-tripping. Prefer safe provider codes and operation labels over copying provider payloads into logs or client responses.
 
-## Catch-All with Effect.catch
+## Failure, defect, and severity
 
-For catching everything in the error channel:
+- **Typed failure:** an outcome a caller may handle, such as validation, not-found, denial, throttling, decline, dependency unavailability, or persistence failure.
+- **Defect:** an invariant violation, bug, unexpected throw, or other failure outside the declared error channel.
+- **Interruption:** cancellation, not an application error. Broad Cause handlers must preserve it.
+
+Typed failures are not uniformly `400` or `Warn`. Transport and logging policy belongs to the owning boundary: validation may be `400` and `Info`, rate limiting `429` and `Warn`, while a typed database outage may be `503` and `Error`.
+
+Use `Effect.orDie` only when the boundary deliberately promotes a typed failure to an unrecoverable defect, commonly during startup after no truthful recovery remains.
 
 ```ts
-const recovered = program.pipe(
-  Effect.catch((error) =>
-    Effect.gen(function* () {
-      yield* Effect.logError("request failed", error)
-      return fallbackValue
-    })
-  )
+declare const loadRequiredStartupConfig: Effect.Effect<unknown, Error>
+
+const start = loadRequiredStartupConfig.pipe(Effect.orDie)
+```
+
+## Typed recovery
+
+Use typed recovery before Cause-level recovery. Catch only where the caller has a truthful fallback, alternate route, retry policy, or transport mapping.
+
+```ts
+const optionalUser = findUser("user-123").pipe(
+  Effect.catchTag("NotFoundError", () => Effect.succeed(undefined)),
+)
+
+declare const processPayment: Effect.Effect<Charge, PaymentError>
+
+const paymentResult = processPayment.pipe(
+  Effect.catchTags({
+    PaymentDeclinedError: (error) =>
+      Effect.succeed({ accepted: false as const, code: error.reasonCode }),
+    PaymentProviderError: () =>
+      Effect.succeed({ accepted: false as const, code: "temporarily_unavailable" }),
+  }),
 )
 ```
+
+`Effect.catch` handles all typed failures but leaves defects and interruption alone. Prefer `catchTag` or `catchTags` when variants need different behavior; let unhandled errors continue to the boundary policy in [`error-handler.md`](error-handler.md).

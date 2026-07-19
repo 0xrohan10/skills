@@ -1,280 +1,97 @@
 ---
 name: finalize
-description: "Ship-readiness pass: review, fix, and validate working copy or PR changes. Use when asked to finalize, harden, do a final pass, or make code shippable."
+description: "Finalize working-copy changes, an existing PR, or both into an objectively merge-ready state. Use for a final pass, hardening, or ship readiness."
 context: fork
 ---
 
 # Finalize
 
-Your job is to help ship.
+Own the last engineering pass on a working tree. The result is an objectively merge-ready tree or an explicit blocked outcome.
 
-Take ownership of the last serious pass before merge: understand what changed, identify what could still go wrong, look for what can be safely simplified, fix everything that has a clear right answer, validate the result, and surface only the decisions that genuinely require product or architectural input.
+## Ownership and Authorization
 
-This is not a generic review skill and not a refactor-for-fun skill. The outcome should be a branch that is safer, simpler, cleaner, better validated, and closer to merge than when you started. Ideally, after you run, the user can click merge and ship. And if something still needs their input, they should have zero confusion about what, why, and what you recommend.
+Finalize may inspect repository and read-only PR state, edit intended working-tree files, and run safe local, test, sandbox, simulator, or preview validation. Its default stopping point is the merge-ready tree and report.
 
-## What "good" looks like
+Version-control transitions and external side effects are opt-in. Perform a branch creation or switch, commit or amend, push, PR creation or update, review reply or resolution, merge, deployment, release, publication, or external communication only when the user explicitly authorizes that class of action in the current conversation. Invocation of `finalize` alone grants none of those actions.
 
-When this skill works well:
+The explicit PR-to-deployment lifecycle belongs to `code-review-loop`; hand off to it only when the user requests that lifecycle. Behavior-preserving cleanup belongs to `simplify`.
 
-- the important risks have been investigated, not guessed at
-- the likely blast radius has been mapped and the important affected surfaces have been checked, not assumed safe
-- the change has been sized realistically: low, medium, or high risk, with the depth of investigation and validation matched to that level
-- any non-trivial finalize edits sit behind a clear rollback boundary, so the user's pre-finalize state is easy to recover
-- obvious bugs and regressions are already fixed
-- safe, local simplifications have been made where they clearly reduce complexity
-- stale docs, broken references, and unresolved review feedback are handled
-- validation has actually been run where appropriate, using the highest-fidelity safe checks available for the change
-- the checked surfaces and any remaining unverified areas are explicit
-- the final report is short, decisive, and actually useful
-- the user is left with confidence, not a pile of chores
+## Scope
 
-## Approval boundary
+1. Determine whether the evidence source is the working-copy diff, an existing PR diff, or both. Use the user's stated scope; ask only when ambiguity could mix unrelated work.
+2. Inspect status, effective diff, changed files in full, relevant callers and tests, and applicable root-to-file repository instructions such as `AGENTS.md`, `CLAUDE.md`, and their references.
+3. Identify unrelated working-tree changes and preserve them. Restrict edits to intended files and hunks unless an affected dependency requires a clearly evidenced fix.
 
-This skill is proactive about getting work ready, not about making irreversible production decisions.
+Scope is established when every changed file belongs to the intended change or is explicitly excluded, and every applicable instruction has been inspected.
 
-Without explicit user approval in the current conversation, do not:
+## Risk Tiers
 
-- deploy anything
-- merge anything
-- publish or release anything to production
-- send external or customer-facing communications
-- trigger any other action that would directly affect production users or live systems
+Assign the highest tier whose condition applies and record the evidence:
 
-You may still prepare the work aggressively:
+| Tier | Conditions | Minimum depth |
+| --- | --- | --- |
+| Low | Local implementation or documentation change with no shared contract, persisted data, security, concurrency, infrastructure, or rollout effect | Inspect the changed surface and direct tests; run targeted repository checks |
+| Medium | Multi-file or shared-path behavior, dependency/config changes, indirect consumers, meaningful failure modes, or a non-trivial rollback | Trace affected callers and states; run affected-package checks and exercise the changed behavior |
+| High | Authentication/authorization, public API compatibility, schema or persisted data, migrations, transactions/concurrency, infrastructure/deployment, broad architecture, or hard rollback | Trace end-to-end and operational impact; validate integrations plus applicable migration, rollback, rollout, observability, and containment paths |
 
-- fix and simplify the code when the answer is clear
-- run validations
-- create a branch
-- commit task-related changes
-- open or update a PR through the normal workflow when safe to do so
+A small diff can be high risk. Missing evidence raises the tier rather than lowering it.
 
-If the next step would move from "ready to ship" to "actually shipped," stop and ask.
+## Readiness Pass
 
-## Preserve reversibility
+### 1. Build the Impact Map
 
-Finalize work should be easy to undo.
+For every changed surface, record what changed, direct and indirect consumers, plausible failure modes, user or operational impact, and the validation that can detect each material regression. Classify every credible affected surface as checked, non-material with evidence, or blocked.
 
-Before making non-trivial edits of your own, create a clear rollback boundary whenever it is safe to do so. This matters most when you are about to make medium- or high-risk changes, broad simplifications, multi-file rewrites, or deletions of components, helpers, or other structure that may later prove to be useful after all.
+The impact map is complete when every changed file and every credible affected surface has one classification.
 
-Treat the user's pre-finalize state as something worth preserving, not something to overwrite in place.
+### 2. Resolve Shipping Findings
 
-Default approach:
+Investigate correctness, contracts, edge states, security, accessibility, failure handling, docs/configuration, rollout, and operability where the impact map makes them relevant. Record each finding with location, evidence, severity, proposed action, and verification.
 
-- if you are on a non-default branch or an existing PR branch and the task-related working copy is coherent, commit the current task state before your larger finalize edits
-- then place your own finalize changes in one or more new commits on top, rather than mixing them into that baseline state
-- if you are on the default or base branch and the task-related working copy is coherent, create a branch first and then create the baseline commit there before making larger finalize edits
-- if the work is already committed and you are only adding finalize edits, keep those edits isolated in their own commit rather than folding them into the existing commit unless the user explicitly asked for that
+Fix findings whose correct action is supported by repository evidence and fits the task boundary. Preserve product, API, migration, and rollout decisions as explicit blockers when intent cannot be inferred safely. Classify non-blocking follow-ups separately with the evidence that makes them safe to defer.
 
-If the tree is mixed with unrelated edits, the task boundary is unclear, or a checkpoint commit would capture work that should not be bundled together, do not force a commit just to satisfy this rule. In that case:
+Every finding is resolved as fixed, non-blocking follow-up, or blocker; each disposition has a concrete reason.
 
-- avoid invasive simplification or broad rewrites
-- either keep your edits narrowly scoped and easy to inspect
-- or stop and ask the user before making larger changes that would be hard to disentangle
+### 3. Delegate Cleanup
 
-The goal is not "always commit no matter what." The goal is that any substantial finalize-driven change should usually be reversible with a clean commit boundary, and should almost never be mixed invisibly into an uncommitted working copy.
+Invoke `simplify` after correctness fixes, supplying the same working-tree or explicit base/head effective diff established for finalize. Its preservation contract, reviewer lenses, finding record, and completion gate are authoritative; finalize does not recreate or weaken them. A `BLOCKED` simplify result blocks finalize. A no-edit `SIMPLIFIED` result is valid when its exhaustive lens pass found no qualifying cleanup.
 
-## Determine the scope
+Cleanup is complete when `simplify` reports `SIMPLIFIED` and every cleanup edit appears in the final impact map and validation plan.
 
-First determine whether the user wants:
+### 4. Handle PR-Only Evidence
 
-- the current working copy
-- the current PR
-- both
+When PR scope and read access are available, inspect required checks and every unresolved review thread. Convert correctness or shipping-risk feedback into findings, route behavior-preserving cleanup through `simplify`, and classify outdated, vague, stylistic, or out-of-scope feedback with a concise no-change rationale. Replying to or resolving a thread follows the authorization boundary.
 
-If the user already said which one, use that.
+PR evidence is complete when every unresolved thread and required check has a recorded disposition tied to the current PR head SHA.
 
-If both a PR and working-copy changes exist and the user did not specify, prefer finalizing the working copy first and mention any PR-only concerns separately. Only stop to ask when the distinction materially changes the work and guessing would be risky.
+### 5. Validate by Risk
 
-If there is nothing to finalize, say so plainly.
+Create a validation matrix before running checks: each material affected surface maps to a repository command or a safe behavioral exercise and an expected result. Use commands from repository instructions, package scripts, and CI rather than assuming a package manager.
 
-If the working copy is dirty, be careful about scope hygiene:
+Run the matrix plus `git diff --check`. For medium risk, include affected-package and real-flow coverage. For high risk, include the applicable integration and operational paths from the tier definition. Diagnose failures, fix those caused by the intended change, and rerun every invalidated row. Classify unrelated failures with evidence; a materially required unavailable or failing row is a blocker.
 
-- distinguish the changes you are finalizing from unrelated in-progress user edits
-- avoid rewriting, reformatting, or "cleaning up" files just because they are already dirty
-- do not revert or overwrite user work to make your own edits easier
-- when possible, keep your edits confined to the files and hunks that belong to the task you are finalizing
-- if the boundary between your work and the user's in-progress changes is unclear and there is real risk of mixing them, stop and ask rather than guessing
+Validation is complete when every matrix row passes and every omitted check is shown to be non-material.
 
-If you are finalizing the current working copy on the repository's default or base branch, treat "ready to ship" as potentially including PR creation, not just code cleanup. If the work ends in high confidence, has no unresolved blockers, and the diff is a coherent task, proactively continue through the repo's normal PR flow:
+### 6. Audit the Final Tree
 
-- create a branch from the finalized working copy
-- commit any remaining task-related changes if needed
-- create the PR using the project's standard PR workflow, skill, or tooling
+Re-read the complete diff and current status. Confirm that fixes address their findings, simplifications satisfy `simplify`, generated artifacts correspond to owned sources, documentation matches behavior, and unrelated user work remains intact.
 
-Do this only when it is clearly safe. If the tree contains unrelated work, the task boundary is unclear, confidence is not high, or publishing the branch would be premature, stop at the finalize handoff instead of forcing a PR.
+The audit is complete when every final hunk maps to the intended change, a resolved finding, or an authoritative simplification finding.
 
-## Default execution order
+## Completion Gate
 
-Think like the person who would approve this to ship tonight. Follow this sequence unless there is a strong reason not to:
+Report `TREE_MERGE_READY` only when all statements are true:
 
-1. Determine scope and task boundaries first.
-2. Build the picture locally: read the diff, surrounding code, map the likely blast radius, and quickly size the work as low, medium, or high risk before delegating.
-3. If your likely edits are non-trivial and the task state is coherent, establish a rollback boundary first (see "Preserve reversibility" above).
-4. Spawn parallel subagents only for independent side investigations that can inform the main work without blocking orientation (see "Investigate what could block shipping" below for delegation guidance).
-5. Synthesize the findings into one concrete view of affected surfaces, likely failure modes, and the fixes or validations that matter.
-6. Fix the issues with clear, low-risk answers. Keep cross-cutting or integration-heavy fixes in the main thread, and delegate bounded, isolated implementation tasks when that reduces context load without weakening safety.
-7. Validate with the highest-fidelity safe checks available.
-8. If the change is medium or high risk, do one final targeted pass over the original blast radius after fixes and validation.
-9. Report what was checked, what was fixed, what remains unverified, and why your confidence is what it is.
+- Scope is established and the risk tier has evidence.
+- Every changed file and credible affected surface is classified in the impact map; every material surface is verified.
+- Every finding and PR-only review item in scope has a recorded disposition, with zero unresolved blockers.
+- `simplify` reports `SIMPLIFIED`, and every resulting edit is included in the impact map.
+- `git diff --check`, every applicable repository-required check, and every validation-matrix row pass.
+- Every final hunk is accounted for and all unrelated working-tree changes remain intact.
+- The authorization boundary was observed, so the report distinguishes tree readiness from unpublished or unmerged remote state.
 
-## Build the picture fast
+If any statement is false, report `BLOCKED` and enumerate each unmet statement, its evidence, and the next decision or action needed. Confidence labels never substitute for this gate.
 
-Start by getting oriented:
+## Report
 
-- inspect repository status and the effective diff
-- identify changed files and read them in full
-- read the relevant project instructions (`AGENTS.md`, `CLAUDE.md`, and referenced docs as needed)
-- identify the type of work involved: backend, frontend, infra, schema, integration, refactor, new feature, or a mix
-- look beyond the changed files when needed: callers, related tests, docs, routes, schemas, and affected flows
-
-Do not stay trapped inside the diff. A finalize pass is about whether the change holds up in the codebase, not whether the patch looks tidy in isolation.
-
-Before you conclude a change is safe, name the parts of the codebase or product it could plausibly affect and check the ones that matter most. Treat any area with credible impact that you did not inspect as unverified, not implicitly safe.
-
-You do not need a heavyweight artifact, but you should have a clear mental or written impact map before editing: what changed, what it could affect, what looks risky, and what must be validated before calling it ready.
-
-## Investigate what could block shipping
-
-Use your judgment to investigate the likely failure modes for the kind of change you found.
-
-Do not limit this to the edited files. Follow the change through its likely consequences in shared code, downstream consumers, neighboring flows, and operational surfaces where regressions could hide.
-
-Match the depth of the pass to the risk tier. Low-risk changes may need a tight local sweep. Medium-risk changes usually need broader dependency and behavior checks. High-risk changes should trigger a more deliberate pass across affected flows, integration boundaries, and release-readiness concerns.
-
-Examples:
-
-- backend or integration work: input validation, auth, error handling, transaction boundaries, retries/timeouts, status codes, leaked internals, unsafe queries, partial failure behavior
-- frontend work: loading/error/empty states, accessibility, responsive behavior, unnecessary effects, stale closures, state ownership, design-system drift, broken interactions
-- refactors: missed call sites, stale names, accidental API changes, tests still asserting the old behavior
-- new features or greenfield code: missing setup docs, missing env documentation, dev-only assumptions, dependency quality, missing guardrails
-- PR work: unresolved review comments or feedback — but read each one critically (see "Handle review feedback with judgment" below)
-
-### Delegating to subagents
-
-Use subagents or Agent Teams for independent side investigations when that reduces context load. Good delegated work is narrow and concrete:
-
-- conventions and commands
-- dependency and impact tracing
-- focused backend or frontend audits
-- unresolved PR feedback
-- targeted verification of a suspicious area
-
-Before you spawn a subagent, know what question it owns, why that question is not the main-thread critical path, and what concrete output you expect back. Ask them to return concrete findings with file references and recommended action.
-
-After subagents return, integrate their findings before editing. The main thread owns the final judgment about blast radius, fixes, and ship confidence.
-
-You may also delegate implementation work, but only when the ownership boundary is clean: concrete goal, clearly isolated write scope, low risk of conflicting with other edits.
-
-If Agent Teams are available in Claude Code, use them only when the task truly benefits from coordinated parallel work across multiple independent investigations or isolated implementation tracks. Do not reach for an agent team for tightly sequential work, same-file edits, or tasks where the coordination overhead would outweigh the gain.
-
-## Fix aggressively, but only where the answer is clear
-
-Your default is to fix, not to propose.
-
-When the branch is already dirty, be especially disciplined: make the smallest effective edits, preserve unrelated local changes, and avoid broad formatting or mechanical rewrites unless they are required for a safe fix.
-
-Treat simplification the same way: always look for it, but only apply it when it is clearly safe and local.
-
-Raise the bar further when a simplification would remove multiple components, delete helper layers, collapse public interfaces, or otherwise erase structure across several files. Those changes are no longer "safe and local" just because they reduce code. Investigate more, checkpoint first, and keep the simplification in its own reversible commit whenever possible.
-
-Good simplification is behavior-preserving and reduces mental load. Typical examples:
-
-- removing dead branches, obsolete flags, or unnecessary indirection
-- collapsing duplicated or overly defensive logic when the simplified version is clearly correct
-- tightening APIs, names, or state flow when that makes the changed area easier to reason about
-- deleting workarounds that no longer serve a purpose
-
-Do not chase elegance for its own sake. If the simplification is speculative, invasive, or likely to trigger unrelated churn, leave it alone.
-
-Fix issues directly when the correct action is clear and low-risk, especially:
-
-- real bugs
-- safe simplifications that make the changed area easier to understand or maintain
-- broken imports/exports or stale references
-- missing obvious edge-case handling
-- missing or inconsistent validation
-- type-safety holes with a clear local fix
-- dead code, commented-out code, debug leftovers, and obvious cleanup
-- stale docs or misleading comments
-- unresolved review feedback with a clear implementation path — but only when the feedback is actually worth acting on (see below)
-- tests that should be updated alongside the change
-
-## Handle review feedback with judgment
-
-Not all review comments deserve implementation. Some are genuinely important. Some are bullshit.
-
-Your job is to tell the difference and act accordingly. Blindly implementing every comment is just as bad as ignoring them all — it wastes effort, bloats the diff, and can make the code worse.
-
-For each unresolved review comment, evaluate whether it:
-
-- **Points to a real bug, risk, or correctness issue** — fix it, this is what finalize is for
-- **Suggests a meaningful simplification or catches a genuine oversight** — fix it
-- **Is trivial, nitpicky, or stylistic in a way that doesn't matter for shipping** — reply explaining why it's not worth addressing here, and resolve it
-- **Is wrong, outdated, or based on a misunderstanding of the code** — reply with the correction, and resolve it
-- **Suggests a refactor or improvement that is out of scope for this change** — reply acknowledging it as a valid future improvement if it is one, and resolve it
-- **Is vague, generic, or reads like an AI reviewer padding its output** — reply noting that it's not actionable, and resolve it
-
-When you dismiss a comment, be direct and specific about why. "This is a style preference and doesn't affect correctness or readability" is fine. "Not addressing" with no reason is not.
-
-The bar is simple: if implementing the feedback makes the change safer, simpler, or more correct, do it. If it just makes the diff bigger or satisfies a reviewer's taste, skip it and say why.
-
-Do not widen scope just because you noticed something that could be prettier.
-
-Avoid speculative rewrites, style churn, and opportunistic architecture changes unless they are required to make the code safe to ship. "Could be cleaner" is not enough. "Would likely bite us soon" is enough.
-
-## Escalate only real decisions
-
-Flag and ask when a fix depends on product intent, API contract choices, migration strategy, rollout policy, or other decisions you cannot safely infer.
-
-When escalating:
-
-- be specific about the risk
-- explain why you did not auto-fix it
-- propose the most likely good direction when possible
-
-The user should see a short list of actual decisions, not a hedge against doing the work.
-
-## Validate proportionally
-
-After fixing, run the appropriate checks for the scope of the change.
-
-Default to the smallest sufficient validation set, then expand if risk or failures justify it:
-
-- typecheck for localized code changes
-- lint when changes span files or patterns
-- targeted tests for the affected area
-- build for broader structural changes
-- real-flow verification in the best safe environment available when behavior changed: browser, simulator, local app, preview environment, local API calls, CLI exercise, integration harness, or equivalent
-
-If a check fails, treat that as part of finalize: understand it, fix what belongs to this change, and rerun. Do not stop at the first red check unless the failure is unrelated and you can explain that clearly.
-
-Prefer exercising the real behavior of the change, not just reading code or relying on static checks. Use the safest environment that gives meaningful signal: local, test, mock, sandbox, simulator, or preview. Do not use finalize to poke production systems, mutate live data, or trigger irreversible external side effects.
-
-Aim to leave the user with enough practical validation that they would not normally need a second routine testing pass just to establish basic confidence. If that standard was not reached, say so explicitly and explain what remains.
-
-When relevant to the kind of change, also check ship-readiness concerns beyond code correctness: rollout assumptions, migration safety, rollback path, observability, alerting, feature flags, config drift, operational docs, and whether a failure would be detectable and containable. Use judgment here; do not force this checklist onto trivial changes.
-
-## The standard for completion
-
-You are done when one of these is true:
-
-- the work is validated and you would be comfortable shipping it
-- the work is validated, you would be comfortable shipping it, and if it started on the default or base branch you have also carried it through the normal branch-and-PR flow when safe to do so
-- or there is a short, explicit list of blockers/decisions that genuinely prevent high confidence
-
-If confidence is not high, say exactly why.
-
-## Final response
-
-Keep the final handoff concise and decision-oriented. Include:
-
-- scope reviewed and risk level (with reason)
-- surfaces checked and any unverified areas
-- what was fixed or simplified, and why
-- validation run and results
-- rollback boundary created, if applicable
-- branch/PR created, if applicable
-- decisions that need user input, if any
-- ship confidence: high, medium, or low, with one short reason
-
-Keep blockers separate from follow-up ideas. The user should be able to scan the response and know both whether this is ready to merge and what would be worth doing next.
+Return the outcome, scope and risk evidence, fixed and deferred findings, surfaces verified, exact validation results, unverified blockers, and current tree/PR publication state. Keep follow-ups separate from blockers.

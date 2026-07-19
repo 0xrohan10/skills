@@ -1,233 +1,91 @@
 ---
 name: simplify
-description: >
-  Simplify current working-tree changes by applying behavior-preserving edits that follow codebase conventions, reduce duplication, improve clarity, and avoid broad rewrites.
+description: "Behavior-preserving cleanup of a working-tree or explicit base/head diff. Use after implementation or when asked to simplify current or committed changes."
 ---
 
 # Simplify
 
-Use this skill after an implementation pass to make the current working tree smaller, clearer, and more consistent with the existing codebase.
+Own behavior-preserving cleanup. Produce a smaller, clearer diff while keeping the implemented design intact.
 
-The goal is not to redesign the code. The goal is to remove accidental complexity.
+## Scope
 
-## Inputs
+1. Resolve the initial diff: use the current working tree by default, or an explicit base/head comparison supplied by the user or calling skill for committed changes. For a committed comparison, record its merge base and head, and verify the head is checked out before editing. Inspect `git status --short`, the complete initial diff and stat, and relevant hand-authored untracked files.
+2. Read the repository instructions that apply to each changed file, including root-to-file `AGENTS.md`, `CLAUDE.md`, and any documents they reference. Derive conventions and validation commands from those instructions, nearby code, package scripts, and CI configuration.
+3. Treat the user's stated focus and intended changes as the boundary. Preserve unrelated work and include generated files only when the task owns their source and regeneration.
 
-- Current working-tree changes
-- Any user-provided focus, such as:
-  - reduce duplication
-  - follow repo conventions
-  - simplify route loaders
-  - clean up API handlers
-  - avoid public API changes
+Scope is established when the initial diff is reproducible, every in-scope file and applicable instruction is named or inspected, and unrelated changes are identified. The final candidate diff is the post-edit working-tree diff for working-tree scope; for committed scope, it is the recorded merge base compared with the checked-out head plus its staged, unstaged, and relevant untracked cleanup edits.
 
-## Rules
+## Preservation Contract
 
-Preserve behavior exactly.
+An edit qualifies only when evidence shows that all observable contracts remain equivalent:
 
-Do not change:
-- public APIs
-- request/response shapes
-- database schemas
-- error semantics
-- ordering of side effects
-- user-visible UI behavior
-- tests unless the existing implementation already changed behavior and tests must follow
+- public APIs, types, inputs, outputs, request/response shapes, and serialization
+- database schemas, persisted data meaning, migrations, and compatibility expectations
+- errors, status codes, logging relied on by consumers, side-effect order, concurrency, and timing guarantees
+- user-visible UI, interactions, accessibility semantics, and state transitions
+- test meaning and coverage; test cleanup retains the same assertions while production equivalence remains independently evidenced
 
-Prefer:
-- existing codebase conventions
-- nearby patterns
-- explicit boring code
-- small edits
-- local simplification
+Apply the smallest local edit with affirmative equivalence evidence. Record uncertain, speculative, cross-cutting, or redesign-dependent ideas as skipped. This section is the authoritative preservation boundary for every lens and finding below.
 
-Avoid:
-- broad rewrites
-- clever compression
-- new abstractions for future use
-- extracting helpers used only once
-- replacing clear code with dense code
-- changing behavior because a cleaner design exists
+## Reviewer Lenses
 
-## Workflow
+Review every changed hunk through all four lenses:
 
-### 1. Inspect the working tree
+| Lens | Target | Evidence to inspect |
+| --- | --- | --- |
+| Conventions | Match established repository and domain patterns | Applicable instructions, neighboring implementations, imports, naming, typing, errors, tests |
+| Simplicity | Remove accidental indirection and cognitive load | Redundant wrappers or state, nesting, stale comments, over-generalized functions, needless parameters |
+| Duplication | Reuse a natural existing source of truth or a small local shared expression | Repeated parsing, validation, mapping, literals, branches, and nearby helpers without awkward dependencies |
+| Dataflow | Make work and ownership direct while removing obvious waste | Repeated I/O, N+1 work, unnecessary sequencing or recomputation, leaked listeners, redundant updates |
 
-Review these:
+Clear code outranks shorter code. Repository precedent outranks generic taste. Efficiency findings qualify when the simpler dataflow also satisfies the preservation contract.
 
-    git status --short
-    git diff --stat
-    git diff --unified=80
-    git ls-files --others --exclude-standard
+## Finding Record
 
-Treat tracked diffs as the main scope.
+Maintain one coverage row per in-scope hunk: `path:line-range | conventions | simplicity | duplication | dataflow`. Mark each lens `clear` or list its finding IDs so a no-finding pass remains checkable.
 
-For untracked files, inspect only hand-authored source, docs, and config files. Ignore build output, generated files, vendor files, lockfiles, and binaries unless directly relevant.
+Record each actionable opportunity before editing:
 
-### 2. Launch focused reviewers
+```yaml
+id: S1
+lens: conventions | simplicity | duplication | dataflow
+location: path/to/file.ts:line
+evidence:
+  current: exact construct in the changed hunk
+  precedent: nearby pattern, instruction, caller, or measured waste
+issue: concrete accidental complexity
+change: smallest proposed edit
+preservation: contracts examined and why each remains equivalent
+payoff: code, branch, dependency, state, or work removed
+risk: low | medium | high
+confidence: low | medium | high
+disposition: applied | skipped
+reason: evidence supporting the disposition
+verification: command or inspection tied to this finding
+```
 
-Use subagents where available. If the harness does not support subagents, run these reviews as separate passes.
+A finding names local evidence and a concrete action. Apply findings only when preservation evidence is complete, confidence is high, and the edit is local and reviewable.
 
-Each reviewer only proposes changes. The parent or main agent decides what to apply.
+## Execution
 
-#### Reviewer A: Codebase conventions
+1. Review every in-scope hunk against every lens, reading surrounding code and affected callers where equivalence depends on them.
+2. Resolve overlapping findings into one smallest change. Re-read the current file immediately before editing so concurrent work remains intact.
+3. Apply findings sequentially and update each disposition. Inspect the complete resulting diff after all edits.
+4. Run `git diff --check`, repository-required checks, and the narrowest tests, type checks, lint, builds, or behavioral exercises that cover the edited surfaces. Expand validation when a failure or risk requires it.
 
-Look for changed code that works but does not fit the repo.
+## Completion Gate
 
-Check:
-- neighboring files
-- existing handlers, routes, services, components, and tests
-- naming conventions
-- import style
-- error handling
-- typing patterns
-- file organization
-- framework idioms already used in the repo
+Report `SIMPLIFIED` only when all statements are true:
 
-Good findings:
-- new code bypasses an existing service or repository boundary
-- route/API errors use a different shape than nearby code
-- names do not match domain language
-- imports or file layout differ from local practice
-- tests are structured differently from adjacent tests
+- Every in-scope changed hunk has a recorded pass through all four lenses.
+- Every finding has an `applied` or `skipped` disposition with evidence and a preservation rationale.
+- Every applied edit satisfies every item in the preservation contract; no affected contract surface is unaccounted for.
+- The final candidate diff includes every original in-scope hunk and every cleanup edit, contains only intended changes and simplifications, and leaves unrelated working-tree changes intact.
+- `git diff --check`, every applicable repository-required check, and every selected targeted validation pass.
+- Each omitted or unavailable check is named with the concrete reason and leaves no unsupported success claim.
 
-Skip generic style opinions.
+If any statement is false, report `BLOCKED` and name each unmet statement. A valid no-edit result records exhaustive lens coverage and explains why no finding qualified.
 
-#### Reviewer B: Duplication and reuse
+## Report
 
-Look for:
-- duplicated logic introduced in the diff
-- existing helpers, types, or constants that should be reused
-- repeated validation, parsing, mapping, or formatting logic
-- string literals that should use existing enums or constants
-- copy-paste branches that can share a small local helper
-
-Only suggest reuse when it genuinely reduces code and preserves behavior.
-
-Do not import distant helpers if that creates an awkward dependency.
-
-#### Reviewer C: Simplicity and readability
-
-Look for:
-- unnecessary variables
-- redundant wrappers
-- over-generalized functions
-- nested conditionals that can become guard clauses
-- confusing names
-- stale or obvious comments
-- unnecessary state, effects, or memoization
-- parameters that are already available from context
-
-Prefer clearer code, not merely shorter code.
-
-#### Reviewer D: Efficiency and dataflow
-
-Look for obvious waste introduced by the diff:
-
-- repeated expensive work
-- avoidable repeated DB, API, or file calls
-- accidental N+1 patterns
-- unnecessary sequential awaits
-- missing cleanup for listeners, timers, or subscriptions
-- state updates that fire even when nothing changed
-- avoidable rerenders or recomputation
-
-Skip micro-optimizations unless they also simplify the code.
-
-### 3. Require structured findings
-
-Each reviewer should return findings in this shape:
-
-    {
-      "findings": [
-        {
-          "category": "conventions | duplication | simplicity | efficiency",
-          "file": "path/to/file.ts",
-          "issue": "short description",
-          "change": "specific proposed change",
-          "risk": "low | medium | high",
-          "confidence": "low | medium | high"
-        }
-      ]
-    }
-
-Reject vague findings.
-
-A good finding is actionable and local.
-
-### 4. Merge findings
-
-Prioritize findings in this order:
-
-1. Conventions
-2. Simplicity
-3. Duplication
-4. Efficiency
-
-Apply only findings that are:
-
-- behavior-preserving
-- high-confidence
-- small enough to review
-- consistent with nearby code
-- unlikely to cause merge conflicts
-
-Skip findings when:
-- behavior could change
-- the old code is ugly but intentional
-- the proposed abstraction is speculative
-- reviewers disagree and the safer choice is unclear
-- the edit would require broad rewrites
-
-### 5. Apply edits carefully
-
-Apply edits sequentially, one file at a time.
-
-Before each edit:
-- read the current file
-- confirm the change still applies
-- confirm it is smaller or clearer than the existing version
-- confirm it preserves behavior
-
-Prefer surgical edits over whole-file rewrites.
-
-After editing, inspect the final diff.
-
-### 6. Verify
-
-Run the narrowest useful checks available.
-
-Prefer, in order:
-- targeted tests for changed files
-- package-level typecheck
-- package-level lint
-- existing cheap validation command
-
-Do not run expensive integration suites unless explicitly requested.
-
-If no obvious check exists, say so.
-
-## Final response
-
-Keep the final response short.
-
-Use this format:
-
-    Simplified:
-
-    path/to/file.ts
-      ✓ [Conventions] aligned error handling with nearby handlers
-      ✓ [Simplicity] flattened nested branching
-      ✓ [Duplication] reused existing parser helper
-
-    Not applied:
-      ⚠ [Efficiency] batching looked possible, but ordering semantics were unclear
-      ⚠ [Duplication] similar helper exists, but it changes invalid-input behavior
-
-    Verification:
-      ✓ pnpm typecheck
-      - No targeted tests found
-
-    Totals:
-      applied 3 · skipped 2
-
-Do not include a long explanation unless the user asks.
+Return the outcome, applied findings by file, skipped findings with reasons, validation commands and results, and totals. Keep explanations proportional to the evidence.

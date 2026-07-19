@@ -1,128 +1,49 @@
 ---
 name: effect-logging
-description: Logging, error handling, and observability patterns for Effect-TS API applications. Use this skill when the user is building an API or backend service with Effect-TS and needs guidance on structured logging, error modeling, tracing, log annotations, or observability setup. Also trigger when the user asks about Effect error handling patterns (Schema.TaggedErrorClass, defects vs failures, Cause), request-scoped logging context, Effect.fn tracing, log levels in Effect, or swapping logger implementations via layers. Trigger even if the user just mentions "logging" or "observability" alongside Effect/effect-ts — don't wait for them to name specific APIs.
+description: Effect v4 logging and observability for APIs and backends. Use for structured logs and logger layers; typed error and Cause boundaries; request context and log spans; or distributed tracing integration.
 ---
 
-# Effect-TS Logging & Observability
+# Effect v4 Logging and Observability
 
-This skill provides idiomatic patterns for logging, error handling, and observability in Effect-TS API applications. It follows the conventions from [effect.solutions](https://effect.solutions) and prioritizes structured, fiber-aware, composable logging.
+Use the project-pinned `effect` source first. If it does not answer an API question, check current upstream source; v4 is version-sensitive.
 
-## Core Principles
+## Process
 
-1. **Errors are typed and tracked** — Effect's `Effect<A, E, R>` signature means the error channel is part of the type. Use this to distinguish expected failures from unexpected defects structurally, not with runtime flags.
-2. **Logging is a first-class effect** — `Effect.logInfo(...)` and friends are effects that compose, respect fiber context, and carry annotations automatically. Don't reach for an external logger directly in business logic.
-3. **Context flows down the fiber tree** — Use `Effect.annotateLogs` and `Effect.withLogSpan` to attach request-scoped metadata. Deeply nested services inherit annotations without explicit threading.
-4. **Logger implementation is swappable** — Business logic calls `Effect.logInfo(...)`. The actual destination (stdout, JSON, pino, axiom) is determined by the Layer provided at the edge.
+1. **Inspect.** Read the pinned Effect version, nearby conventions, error union, runtime layers, HTTP adapter, and telemetry sink. Continue only when each touched boundary and its data sensitivity are known.
+2. **Route.** Load every matching reference before proposing or editing code:
+   - Error classes, expected failures, external error normalization, `catchTag`, or `orDie`: read [`references/error-patterns.md`](references/error-patterns.md).
+   - HTTP status/body/log policy, `Cause`, defects, composite causes, interruption, or framework adapters: read [`references/error-handler.md`](references/error-handler.md).
+   - Built-in/custom loggers, privacy, log annotations, log spans, tracing, or test capture: read [`references/logger-setup.md`](references/logger-setup.md).
+3. **Apply or review.** Keep business code on `Effect.log*`; map every domain error explicitly at the owning boundary; preserve interruption; and install logger/tracer implementations once at the runtime edge. Continue until every changed event, error variant, Cause reason, and metadata field has a deliberate policy.
+4. **Verify.** Typecheck and test against the pinned package, then inspect emitted logs and responses for representative success, each domain error, a defect, a composite cause, and interruption. Review field names and sample values for privacy before completion.
 
-## When to Reach for This Skill
+## Defaults
 
-- Setting up structured logging in a new Effect API
-- Modeling domain errors with Schema.TaggedErrorClass
-- Adding request-scoped tracing/correlation to an existing Effect app
-- Building a centralized error handler for an HTTP layer (e.g., hono, express)
-- Choosing between `Effect.logWarning` vs `Effect.logError` for different failure modes
-- Wrapping third-party SDK errors for safe serialization
-- Swapping logger implementations between dev/test/prod
+- Model expected application failures with current `Schema.TaggedErrorClass<Self>()(...)` when schema-backed errors fit.
+- Use `Effect.fn("Domain.operation")` for named operation boundaries. It creates a tracing span; it is not a log span.
+- Use `Effect.annotateLogs` for inherited log fields and `Effect.withLogSpan` only for elapsed-time context in log output.
+- Use `Effect.withSpan` and `Effect.annotateCurrentSpan` for distributed tracing. Configure a tracer exporter separately.
+- Treat an error's typed status, HTTP status, log level, client body, and alert policy as separate decisions.
+- Use static event names plus event-specific allowlisted fields. Raw bodies, headers, credentials, tokens, and arbitrary error objects are outside the allowlist.
 
-## Error Modeling
+## Severity
 
-Use `Schema.TaggedErrorClass` (not `Data.TaggedError`) for all domain errors. Schema-based errors are serializable, type-safe, and integrate with `Schema.Defect` for wrapping unknown failures.
+| Level | Use |
+|---|---|
+| `Trace` / `Debug` | Temporary or sampled diagnostic detail |
+| `Info` | Normal lifecycle events and routine client outcomes |
+| `Warn` | Degradation, throttling, retries, or conditions needing attention but not immediate investigation |
+| `Error` | Failed dependencies, defects, or outcomes needing investigation |
+| `Fatal` | Process-level loss of service where shutdown or restart is expected |
 
-See `references/error-patterns.md` for:
-- Schema.TaggedErrorClass definitions
-- Schema.Defect for wrapping external SDK errors
-- Expected errors vs defects — when to use each
-- Error unions and catchTag/catchTags recovery
-- The `Effect.orDie` pattern for unrecoverable failures
+Do not infer severity from "typed" versus "defect" alone. A typed persistence failure can be `Error`; an ordinary not-found can be `Info` or unlogged.
 
-## Logging Patterns
+## Completion Gate
 
-### Use Effect.fn for Automatic Tracing
+Finish only when all of these are true:
 
-`Effect.fn` creates named, traced functions. Every invocation gets a span with call-site information — no manual `withLogSpan` needed at function boundaries.
-
-```ts
-const processPayment = Effect.fn("processPayment")(
-  function* (orderId: string, amount: number) {
-    yield* Effect.logInfo("charging payment")
-    const charge = yield* stripeCharge(orderId, amount)
-    yield* Effect.logInfo("payment completed").pipe(
-      Effect.annotateLogs({ chargeId: charge.id })
-    )
-    return charge
-  }
-)
-```
-
-`Effect.fn` also accepts a second argument for cross-cutting transforms (retry, timeout) that stay co-located with the function definition.
-
-### Request-Scoped Annotations
-
-Attach metadata at the HTTP handler level. Every log line emitted within the effect — including from deeply nested services — inherits these annotations automatically.
-
-```ts
-const handleRequest = (req: Request) =>
-  processOrder(req.body).pipe(
-    Effect.annotateLogs({
-      requestId: req.id,
-      userId: req.userId,
-      method: req.method,
-      path: req.path
-    }),
-    Effect.withLogSpan("handleRequest")
-  )
-```
-
-### Nested Spans for Timing
-
-Use `withLogSpan` within a function to trace sub-operations. Spans nest and produce timing output like `handleRequest=245ms processOrder=220ms charge=180ms`.
-
-```ts
-const processOrder = (order: Order) =>
-  Effect.gen(function* () {
-    yield* validateOrder(order).pipe(Effect.withLogSpan("validate"))
-    yield* chargePayment(order).pipe(Effect.withLogSpan("charge"))
-    yield* sendConfirmation(order).pipe(Effect.withLogSpan("notify"))
-  }).pipe(Effect.withLogSpan("processOrder"))
-```
-
-### Log Levels
-
-| Level   | When to use                                                                 |
-|---------|-----------------------------------------------------------------------------|
-| `debug` | Local dev or on-demand investigation. Chatty by design.                     |
-| `info`  | Normal operational events. Request lifecycle, job enqueued, webhook received.|
-| `warn`  | Expected/operational failures. 4xx responses, retries, rate limits.         |
-| `error` | Unexpected failures impacting users. Defects, infrastructure failures.      |
-| `fatal` | Process-level failures. Unhandled rejections, uncaught exceptions.          |
-
-Default prod level: `info`. If you're at `debug` in prod by default, signal-to-noise is garbage.
-
-### What to Log vs What Not to Log
-
-**Log:** request method/path/status/duration, auth events (login, failure, token refresh), business-critical state transitions, outbound service calls with timing, queue/job lifecycle.
-
-**Don't log:** request/response bodies by default (PII risk, size), auth tokens/credentials, full SQL with parameters, health check endpoints (noise). In PHIPA/PIPEDA contexts, redact sensitive fields via a custom serializer or don't log them at all.
-
-## Centralized Error Handling
-
-See `references/error-handler.md` for the complete HTTP error handler pattern, covering:
-- Matching on typed failures vs defects using Cause
-- Logging operational errors at `warn`, defects at `error`
-- Never leaking internal details to the client (generic 500 + request_id)
-- Process-level safety nets (unhandledRejection, uncaughtException)
-
-## Logger Implementation
-
-See `references/logger-setup.md` for:
-- Using Effect's built-in `Logger.json` for structured output
-- Building a custom pino-backed logger via `Logger.make`
-- Swapping implementations via `Logger.replace` and Layer composition
-- Test logger that captures logs in memory for assertions
-
-## Operational Concerns
-
-- **Don't log in hot loops** — Log batch summaries, not per-item. This applies even though `Effect.logInfo` is lazy; it still creates work for the fiber runtime.
-- **Consistent field names** — Pick a convention (snake_case for log fields is common) and enforce it across all services. A shared logger wrapper or annotation helper helps.
-- **Sampling high-frequency errors** — If your database goes down, you'll generate thousands of identical error logs per minute. Implement rate-limiting or circuit-breaker logic around error logging for known failure modes.
-- **Log shipping** — Don't rely on ephemeral container filesystems. Ship structured JSON to a queryable backend (axiom, datadog, grafana loki). On fly.io, stdout goes to the built-in log drain.
+- Every reachable domain error has an exhaustive status, safe body, log level, event name, and alert decision.
+- Every Cause path handles all typed failures, defects, interruptions, and composite causes without collapsing an `Option` or swallowing cancellation.
+- Every logger path deliberately handles event time, every Cause reason, fiber id, allowlisted annotations, and active log spans without leaking unrestricted payloads.
+- Log annotations, log spans, and distributed tracing are named and configured as distinct mechanisms.
+- Every changed API name and signature was checked against the project-pinned Effect source or current upstream v4 source, and every framework-shaped example is identified as framework-specific or pseudo-code.
