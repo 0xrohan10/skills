@@ -45,3 +45,7 @@ npx skills add 0xrohan10/skills --list
 | `simplify` | Behavior-preserving cleanup of a working tree or explicit diff |
 | `style-doc` | Creates and restyles standalone HTML technical reports |
 | `typescript-structure` | Structures TypeScript via narrow domain modules and explicit dependency graphs |
+
+## License
+
+[MIT](LICENSE) © [0xrohan10](https://github.com/0xrohan10)
