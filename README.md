@@ -42,6 +42,9 @@ npx skills add 0xrohan10/skills --list
 | `finalize` | Hardens a working tree or PR into an objectively merge-ready state |
 | `fly-optimization` | Designs and reviews Fly.io app topology, Postgres, networking, and ops |
 | `formatting` | Formats agent responses for ADHD actionability |
+| `product-design-evolve` | Evolves an existing product into a more distinctive design system without replacing its identity |
+| `product-design-extend` | Adds new UI features that feel native to an established design system |
+| `product-design-propagate` | Propagates an established design system across inconsistent product surfaces |
 | `simplify` | Behavior-preserving cleanup of a working tree or explicit diff |
 | `style-doc` | Creates and restyles standalone HTML technical reports |
 | `typescript-structure` | Structures TypeScript via narrow domain modules and explicit dependency graphs |
