@@ -47,6 +47,7 @@ npx skills add 0xrohan10/skills --list
 | `product-design-propagate` | Propagates an established design system across inconsistent product surfaces |
 | `simplify` | Behavior-preserving cleanup of a working tree or explicit diff |
 | `style-doc` | Creates and restyles standalone HTML technical reports |
+| `test-value-audit` | Audits and prunes low-value tests with evidence-based deletion safeguards |
 | `typescript-structure` | Structures TypeScript via narrow domain modules and explicit dependency graphs |
 
 ## License
