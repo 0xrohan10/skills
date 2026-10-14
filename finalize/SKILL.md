@@ -1,97 +1,77 @@
 ---
 name: finalize
-description: "Finalize working-copy changes, an existing PR, or both into an objectively merge-ready state. Use for a final pass, hardening, or ship readiness."
+description: "Prepare the smallest viable PR. Assess its blast radius, preserve regression protection, and run simplify, unslop, test pruning, and adversarial code review."
 context: fork
 ---
 
 # Finalize
 
-Own the last engineering pass on a working tree. The result is an objectively merge-ready tree or an explicit blocked outcome.
+Produce the smallest viable PR that meets the intended requirements. Assess what the change can affect and verify that tests detect regressions. Remove unnecessary complexity without removing required behavior or useful tests. Prefer clarity and safety over fewer lines.
 
-## Ownership and Authorization
+## Permissions
 
-Finalize may inspect repository and read-only PR state, edit intended working-tree files, and run safe local, test, sandbox, simulator, or preview validation. Its default stopping point is the merge-ready tree and report.
+Inspect repository and read-only PR state, edit intended files, and run safe checks. Preserve unrelated user work. Branch changes, commits, pushes, PR or ticket updates, review replies, merges, deployments, and other external actions require explicit authorization in the current conversation. Invoking finalize does not authorize those actions.
 
-Version-control transitions and external side effects are opt-in. Perform a branch creation or switch, commit or amend, push, PR creation or update, review reply or resolution, merge, deployment, release, publication, or external communication only when the user explicitly authorizes that class of action in the current conversation. Invocation of `finalize` alone grants none of those actions.
+## 1. Establish scope and blast radius
 
-The explicit PR-to-deployment lifecycle belongs to `code-review-loop`; hand off to it only when the user requests that lifecycle. Behavior-preserving cleanup belongs to `simplify`.
+- Determine whether the scope is the working copy, a PR, or both. Read status, the full diff, changed files, repository instructions, relevant callers, and tests. For a PR, record the merge base and head SHA. Include local edits in the candidate diff.
+- If the project has Linear MCP configured, require a linked ticket. Find it in the user's request, branch, commits, or PR. Read its description, acceptance criteria, and relevant comments through MCP. Ask if the ticket is missing or ambiguous. Block if you cannot read it. Define intended behavior and scope from the ticket, not from what the code happens to do.
+- For each changed part, identify direct and indirect consumers, shared contracts, stored data, and operational effects. List possible failures and the checks that detect them. Mark each affected part as checked, not at risk with supporting evidence, or blocked.
+- Assign the highest applicable risk tier. A small diff can be high risk. Missing evidence raises risk.
 
-## Scope
-
-1. Determine whether the evidence source is the working-copy diff, an existing PR diff, or both. Use the user's stated scope; ask only when ambiguity could mix unrelated work.
-2. Inspect status, effective diff, changed files in full, relevant callers and tests, and applicable root-to-file repository instructions such as `AGENTS.md`, `CLAUDE.md`, and their references.
-3. Identify unrelated working-tree changes and preserve them. Restrict edits to intended files and hunks unless an affected dependency requires a clearly evidenced fix.
-
-Scope is established when every changed file belongs to the intended change or is explicitly excluded, and every applicable instruction has been inspected.
-
-## Risk Tiers
-
-Assign the highest tier whose condition applies and record the evidence:
-
-| Tier | Conditions | Minimum depth |
+| Risk | Conditions | Required validation |
 | --- | --- | --- |
-| Low | Local implementation or documentation change with no shared contract, persisted data, security, concurrency, infrastructure, or rollout effect | Inspect the changed surface and direct tests; run targeted repository checks |
-| Medium | Multi-file or shared-path behavior, dependency/config changes, indirect consumers, meaningful failure modes, or a non-trivial rollback | Trace affected callers and states; run affected-package checks and exercise the changed behavior |
-| High | Authentication/authorization, public API compatibility, schema or persisted data, migrations, transactions/concurrency, infrastructure/deployment, broad architecture, or hard rollback | Trace end-to-end and operational impact; validate integrations plus applicable migration, rollback, rollout, observability, and containment paths |
+| Low | Local change without shared-contract or operational effects | Targeted checks and direct tests |
+| Medium | Shared paths, indirect consumers, dependency or configuration changes, or difficult rollback | Affected-package checks and tests of actual workflows |
+| High | Authentication, authorization, public APIs, persisted data, migrations, concurrency, infrastructure, or hard rollback | End-to-end integrations and applicable migration, rollback, rollout, observability, and containment checks |
 
-A small diff can be high risk. Missing evidence raises the tier rather than lowering it.
+Use optional tools when they help assess the blast radius:
 
-## Readiness Pass
+- Use `calldiff` for call-path changes. Run `calldiff --help` for supported syntax. Compare the recorded base with the current candidate using `calldiff diff`. Use `reach` or `tree` to trace affected entrypoints and callers. Record refs, paths, entrypoints, and depth limits. Treat output as supporting evidence, not proof that every dependency or runtime path was found. Inspect omitted paths separately.
+- Use `dev-review-map` for structural or high-risk changes when before-and-after dependency maps would help. Supply exact base and head commits, validate both maps, and save them only in Git notes. Push notes only with explicit authorization. Maps cover committed changes, so inspect local edits separately.
 
-### 1. Build the Impact Map
+Neither tool replaces ticket checks, tests, or adversarial review. If an optional tool is unavailable or blocked, report the limitation and assess the blast radius directly.
 
-For every changed surface, record what changed, direct and indirect consumers, plausible failure modes, user or operational impact, and the validation that can detect each material regression. Classify every credible affected surface as checked, non-material with evidence, or blocked.
+Fix correctness and release issues within scope when repository evidence supports the fix. Record where each issue occurs, how you confirmed it, its severity, the action taken, and how you checked the result. Block when a product or contract decision needs clarification.
 
-The impact map is complete when every changed file and every credible affected surface has one classification.
+For bug fixes, apply `principle-fix-root-causes`. Reproduce the failure and confirm that the fix removes its cause rather than hiding the symptom.
 
-### 2. Resolve Shipping Findings
+## 2. Run the preparation sequence
 
-Investigate correctness, contracts, edge states, security, accessibility, failure handling, docs/configuration, rollout, and operability where the impact map makes them relevant. Record each finding with location, evidence, severity, proposed action, and verification.
+Load these skills and run them in order on the current diff, including earlier edits. Keep the same scope and supply any linked ticket's requirements. Follow each skill's evidence and completion rules. Report `BLOCKED` if a required skill is missing or a pass is blocked. A pass needs no edits if its review finds none to make.
 
-Fix findings whose correct action is supported by repository evidence and fits the task boundary. Preserve product, API, migration, and rollout decisions as explicit blockers when intent cannot be inferred safely. Classify non-blocking follow-ups separately with the evidence that makes them safe to defer.
+1. Run `simplify` for behavior-preserving cleanup. Apply `principle-minimize-reader-load` to remove unnecessary layers and reduce hidden or mutable state. Require `SIMPLIFIED`.
+2. Run `unslop` on text in the diff. Remove AI writing patterns and preserve meaning. Block if its instructions conflict with finalize's permissions or behavior-preservation requirements.
+3. Run `test-value-audit` in cleanup mode on changed tests and tests affected by changed behavior. Apply `principle-test-behavior-not-implementation`. Call the interface users call and assert the result or effect they observe. Rewrite weak assertions for important behavior. Read neighboring tests to check overlap. Delete tests only when they meet the audit's deletion rules, and name surviving tests that detect the same regressions. Keep production code unchanged. Preserve uncertain tests and unrelated suites. Size, mocking, test count, and coverage percentage alone do not determine value.
+4. Run `adversarial-code-review` on the full candidate without editing it. Require the rules the change must preserve, concrete failure cases, evidence for attacks the code prevents, and an `Approve` verdict. After the review, fix supported findings. Do not dismiss a correctness failure as style.
 
-Every finding is resolved as fixed, non-blocking follow-up, or blocker; each disposition has a concrete reason.
+Update the blast-radius map and validation plan after each edit. Repeat affected passes in order. Reuse evidence only if it still applies. Adversarial approval must cover the final candidate.
 
-### 3. Delegate Cleanup
+Within these passes, apply `principle-type-system-discipline` when types change and `principle-make-operations-idempotent` when retries, crashes, or duplicate requests matter. When workers share mutable data, apply `principle-separate-before-serializing-shared-state`. Check whether they can own separate data before adding locks. Do not add another sequence of passes.
 
-Invoke `simplify` after correctness fixes, supplying the same working-tree or explicit base/head effective diff established for finalize. Its preservation contract, reviewer lenses, finding record, and completion gate are authoritative; finalize does not recreate or weaken them. A `BLOCKED` simplify result blocks finalize. A no-edit `SIMPLIFIED` result is valid when its exhaustive lens pass found no qualifying cleanup.
+## 3. Check PR evidence and validate
 
-Cleanup is complete when `simplify` reports `SIMPLIFIED` and every cleanup edit appears in the final impact map and validation plan.
+For a PR, inspect required checks and every unresolved review thread at the current head SHA. Record an action or no-change reason for each item, with evidence. Recheck if the remote head changes. Replies and thread resolution require authorization.
 
-### 4. Handle PR-Only Evidence
+For each material risk, choose a repository command or safe behavior check and state the expected result. Use commands from repository instructions, package scripts, and CI. Run these checks, all required repository checks, and `git diff --check` at the assigned risk tier.
 
-When PR scope and read access are available, inspect required checks and every unresolved review thread. Convert correctness or shipping-risk feedback into findings, route behavior-preserving cleanup through `simplify`, and classify outdated, vague, stylistic, or out-of-scope feedback with a concise no-change rationale. Replying to or resolving a thread follows the authorization boundary.
+Apply `principle-prove-it-works`. Run the affected workflow or inspect the actual output before claiming success. Compilation, cached results, and agent reports alone are not proof. For large changes, apply `principle-build-the-lever` with a small repeatable verification script and keep its output available to the reviewer.
 
-PR evidence is complete when every unresolved thread and required check has a recorded disposition tied to the current PR head SHA.
+For a linked ticket, show which code meets each requirement and acceptance criterion, and which check verifies it. Confirm that the final candidate fixes the reported problem without unexplained changes outside the ticket. Block on missing, conflicting, or unclear requirements.
 
-### 5. Validate by Risk
+Fix failures caused by the candidate and rerun affected checks. Record unrelated failures with evidence. Block if a required material check fails or cannot run, or if a material contract lacks regression protection.
 
-Create a validation matrix before running checks: each material affected surface maps to a repository command or a safe behavioral exercise and an expected result. Use commands from repository instructions, package scripts, and CI rather than assuming a package manager.
+## Completion and report
 
-Run the matrix plus `git diff --check`. For medium risk, include affected-package and real-flow coverage. For high risk, include the applicable integration and operational paths from the tier definition. Diagnose failures, fix those caused by the intended change, and rerun every invalidated row. Classify unrelated failures with evidence; a materially required unavailable or failing row is a blocker.
+Read the final diff and status again. Report `TREE_MERGE_READY` only when:
 
-Validation is complete when every matrix row passes and every omitted check is shown to be non-material.
+- Every final hunk belongs to the intended change or a recorded fix. Unrelated work is intact, generated files match their sources, and documentation matches behavior.
+- The blast-radius map accounts for every affected part. All material risks have passed validation, and all required checks pass.
+- All four passes meet their completion rules for the final candidate. Every deleted test has surviving regression coverage.
+- Every finding and PR item in scope has a supported resolution or safe follow-up. No blocker remains.
+- If Linear MCP is configured, you have read the linked ticket and verified every requirement and acceptance criterion against the final candidate.
+- No action exceeded the user's authorization. State tree readiness separately from publication or merge status.
 
-### 6. Audit the Final Tree
+Otherwise report `BLOCKED`. Give evidence and the next action for each unmet condition.
 
-Re-read the complete diff and current status. Confirm that fixes address their findings, simplifications satisfy `simplify`, generated artifacts correspond to owned sources, documentation matches behavior, and unrelated user work remains intact.
-
-The audit is complete when every final hunk maps to the intended change, a resolved finding, or an authoritative simplification finding.
-
-## Completion Gate
-
-Report `TREE_MERGE_READY` only when all statements are true:
-
-- Scope is established and the risk tier has evidence.
-- Every changed file and credible affected surface is classified in the impact map; every material surface is verified.
-- Every finding and PR-only review item in scope has a recorded disposition, with zero unresolved blockers.
-- `simplify` reports `SIMPLIFIED`, and every resulting edit is included in the impact map.
-- `git diff --check`, every applicable repository-required check, and every validation-matrix row pass.
-- Every final hunk is accounted for and all unrelated working-tree changes remain intact.
-- The authorization boundary was observed, so the report distinguishes tree readiness from unpublished or unmerged remote state.
-
-If any statement is false, report `BLOCKED` and enumerate each unmet statement, its evidence, and the next decision or action needed. Confidence labels never substitute for this gate.
-
-## Report
-
-Return the outcome, scope and risk evidence, fixed and deferred findings, surfaces verified, exact validation results, unverified blockers, and current tree/PR publication state. Keep follow-ups separate from blockers.
+Report the outcome, scope, risk, and results of each pass. Include test-pruning totals and surviving coverage, the adversarial verdict, commands and results, blockers, and publication state. Add ticket and optional tool results when applicable, including limitations. Separate safe follow-ups from blockers. Keep the report proportional to the change.
