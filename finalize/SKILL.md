@@ -60,7 +60,7 @@ Run these skills in order on the current diff, including earlier edits. Keep the
 3. Run `test-value-audit` in cleanup mode on changed tests and tests affected by changed behavior. Call the interface users call and assert the result or effect they observe. Rewrite weak assertions for important behavior. Read neighboring tests to check overlap. Delete tests only when they meet the audit's deletion rules, and name surviving tests that detect the same regressions. Keep production code unchanged. Preserve uncertain tests and unrelated suites. Size, mocking, test count, and coverage percentage alone do not determine value.
 4. Review the final diff once for correctness, security, affected callers, and regression protection. Read surrounding code only as needed to resolve those questions. Report concrete failures with locations, inputs or execution steps, and consequences. Skip style findings, exhaustive attack checklists, and separate review agents. Use the property-based testing requirements below when assessing regression protection.
 
-For high-risk changes, request a separate review appropriate to the risk. Do not start it automatically. Report `BLOCKED` until that review covers the final candidate and has no unresolved material findings.
+The focused self-review is the only required code review at every risk tier. Do not request additional reviewers or block on a separate review unless the user or applicable repository instructions explicitly require it. Address higher risk through stronger tests and validation, not additional review passes.
 
 Update the blast-radius map and validation plan after each edit. After the initial sequence, allow one correction cycle. Group related fixes and repeat only affected passes and checks whose results no longer apply. Reuse existing evidence when it still applies. The focused review must cover the final diff. If blockers remain or further edits are needed after the correction review, stop with `BLOCKED`. Report unresolved issues without weakening the completion requirements.
 
@@ -96,7 +96,7 @@ Read the final diff and status again. Report `TREE_MERGE_READY` only when:
 
 - Every final hunk belongs to the intended change or a recorded fix. Unrelated work is intact, generated files match their sources, and documentation matches behavior.
 - The blast-radius map accounts for every affected part. All material risks have passed validation, and all required checks pass.
-- All three companion passes are complete, and the focused review covers the final candidate with no unresolved material findings. Any required high-risk review is complete. Every deleted test has surviving regression coverage.
+- All three companion passes are complete, and the focused self-review covers the final candidate with no unresolved material findings. Every deleted test has surviving regression coverage.
 - Applicable property-based tests pass. Each omitted property test has a reason, and no material contract lacks regression protection.
 - Every finding and PR item in scope has a supported resolution or safe follow-up. No blocker remains.
 - If a ticket is part of the task's requirements, you have read it and verified every applicable, agreed requirement and acceptance criterion against the final candidate.
@@ -104,4 +104,4 @@ Read the final diff and status again. Report `TREE_MERGE_READY` only when:
 
 Otherwise report `BLOCKED`. Give evidence and the next action for each unmet condition.
 
-Report the outcome, scope, risk, and results of each pass. Include test-pruning totals and surviving coverage, focused review findings, property-test results or omission reasons, commands and results, blockers, and publication state. Add ticket, high-risk review, and optional tool results when applicable, including limitations. Separate safe follow-ups from blockers. Keep the report proportional to the change.
+Report the outcome, scope, risk, and results of each pass. Include test-pruning totals and surviving coverage, focused review findings, property-test results or omission reasons, commands and results, blockers, and publication state. Add ticket and optional tool results when applicable, including limitations. Separate safe follow-ups from blockers. Keep the report proportional to the change.
